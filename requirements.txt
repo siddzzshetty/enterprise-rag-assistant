@@ -3,3 +3,4 @@ uvicorn[standard]
 streamlit
 pydantic
 python-dotenv
+requests
