@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+streamlit
+pydantic
+python-dotenv
