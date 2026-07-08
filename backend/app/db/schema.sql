@@ -45,6 +45,23 @@ CREATE TABLE IF NOT EXISTS documents (
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS document_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL,
+    client_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    section TEXT NOT NULL DEFAULT '',
+    page_number INTEGER,
+    chunk_text TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    embedding_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_id INTEGER NOT NULL,

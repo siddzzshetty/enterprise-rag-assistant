@@ -4,3 +4,11 @@ streamlit
 pydantic
 python-dotenv
 requests
+python-multipart
+pandas
+pdfplumber
+python-docx
+python-pptx
+openpyxl
+chromadb
+sentence-transformers

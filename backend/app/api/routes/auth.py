@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from backend.app.core.config import get_settings
 from backend.app.core.security import generate_session_token, verify_password
 from backend.app.db.connection import Database
 from backend.app.schemas.auth import LoginRequest, SessionResponse
+from backend.app.core.dependencies import get_current_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -48,3 +48,8 @@ def login(payload: LoginRequest) -> SessionResponse:
         full_name=user["full_name"],
         email=user["email"],
     )
+
+
+@router.get("/me")
+def current_session(current_user: dict = Depends(get_current_session)) -> dict:
+    return current_user
