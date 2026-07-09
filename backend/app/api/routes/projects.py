@@ -72,6 +72,20 @@ def ask_question(
     )
 
 
+@router.delete("/{project_id}")
+def delete_project(project_id: int, current_user: dict = Depends(get_current_session)) -> dict:
+    return service.delete_project(current_user["client_id"], project_id)
+
+
+@router.delete("/{project_id}/documents/{document_id}")
+def delete_document(
+    project_id: int,
+    document_id: int,
+    current_user: dict = Depends(get_current_session),
+) -> dict:
+    return service.delete_document(current_user["client_id"], project_id, document_id)
+
+
 @router.get("/{project_id}/exports/{export_kind}")
 def export_project_bundle(
     project_id: int,

@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from backend.app.api.routes.auth import router as auth_router
+from backend.app.api.routes.clients import router as clients_router
 from backend.app.api.routes.dashboard import router as dashboard_router
 from backend.app.api.routes.projects import router as projects_router
 from backend.app.api.routes.health import router as health_router
@@ -18,5 +19,6 @@ def startup_event() -> None:
 
 app.include_router(health_router)
 app.include_router(auth_router)
+app.include_router(clients_router)
 app.include_router(projects_router)
 app.include_router(dashboard_router)

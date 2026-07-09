@@ -143,6 +143,32 @@ def fetch_export_file(export_kind: str) -> tuple[bytes, str]:
     return response.content, filename
 
 
+def delete_project_action(project_id: int) -> None:
+    """Delete a project and refresh workspace."""
+    api_request("DELETE", f"/projects/{project_id}")
+    st.session_state.selected_project_id = None
+    st.session_state.selected_project = None
+    st.session_state.project_stats = None
+    st.session_state.project_documents = []
+    st.session_state.chat_history = []
+    refresh_workspace()
+
+
+def delete_document_action(project_id: int, document_id: int) -> None:
+    """Delete a document and refresh project data."""
+    api_request("DELETE", f"/projects/{project_id}/documents/{document_id}")
+    sync_selected_project()
+
+
+def delete_client_action(client_id: int) -> None:
+    """Delete a client and all associated data."""
+    api_request("DELETE", f"/clients/{client_id}")
+    # Sign out since our session belongs to the deleted client
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.rerun()
+
+
 def sync_selected_project() -> None:
     selected_id = st.session_state.selected_project_id
     if not selected_id:
@@ -190,6 +216,27 @@ with st.sidebar:
                 st.session_state.selected_project_id = selected_project["id"]
                 sync_selected_project()
                 st.rerun()
+            # Delete project button
+            delete_project_clicked = st.button(
+                f"🗑️ Delete '{selected_project['name']}'",
+                use_container_width=True,
+                type="secondary",
+            )
+            if delete_project_clicked:
+                if st.session_state.get("confirm_delete_project") != selected_project["id"]:
+                    st.session_state.confirm_delete_project = selected_project["id"]
+                    st.warning(f"Click again to confirm deletion of '{selected_project['name']}' and all its data.")
+                    st.rerun()
+                else:
+                    try:
+                        with st.spinner("Deleting project..."):
+                            delete_project_action(selected_project["id"])
+                        st.success("Project deleted successfully.")
+                        st.session_state.confirm_delete_project = None
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+                        st.session_state.confirm_delete_project = None
         else:
             st.info("No projects available for this account.")
         if st.button("Sign out", use_container_width=True):
@@ -294,7 +341,22 @@ summary_tab, documents_tab, upload_tab, chat_tab, exports_tab = st.tabs(["Overvi
 
 with summary_tab:
     st.write(f"Client: **{st.session_state.client['name']}**")
-    st.write(f"Project slug: `{selected_project['slug']}`")
+    col_slug, col_del = st.columns([3, 1])
+    with col_slug:
+        st.write(f"Project slug: `{selected_project['slug']}`")
+    with col_del:
+        delete_client_key = "delete_this_client"
+        if st.button(f"🗑️ Delete client '{st.session_state.client['name']}'", key=delete_client_key, type="secondary"):
+            if st.session_state.get(f"confirm_{delete_client_key}") is True:
+                try:
+                    with st.spinner("Deleting client and all associated data..."):
+                        delete_client_action(st.session_state.client["id"])
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+            else:
+                st.session_state[f"confirm_{delete_client_key}"] = True
+                st.warning(f"⚠️ Click again to confirm permanent deletion of client '{st.session_state.client['name']}' and ALL its projects, documents, and data.")
     dashboard_summary = st.session_state.dashboard_summary or {}
     dashboard_metrics = st.columns(4)
     dashboard_metrics[0].metric("Total clients", dashboard_summary.get("total_clients", 0))
@@ -320,7 +382,25 @@ with summary_tab:
 with documents_tab:
     st.markdown("### Indexed documents")
     if st.session_state.project_documents:
-        st.dataframe(st.session_state.project_documents, use_container_width=True, hide_index=True)
+        for doc in st.session_state.project_documents:
+            cols = st.columns([3, 1, 1, 1, 1])
+            cols[0].write(f"**{doc['file_name']}**")
+            cols[1].write(doc["category"])
+            cols[2].write(doc["status"])
+            cols[3].write(f"{doc['chunk_count']} chunks")
+            delete_doc_key = f"delete_doc_{doc['id']}"
+            if cols[4].button("🗑️", key=delete_doc_key):
+                if st.session_state.get(f"confirm_{delete_doc_key}") is True:
+                    try:
+                        delete_document_action(selected_project["id"], doc["id"])
+                        st.success(f"Deleted {doc['file_name']}")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+                else:
+                    st.session_state[f"confirm_{delete_doc_key}"] = True
+                    st.warning(f"Click 🗑️ again to confirm deletion of '{doc['file_name']}'")
+        st.caption("Click the 🗑️ button once to select, then again to confirm deletion.")
     else:
         st.info("No documents uploaded yet.")
 

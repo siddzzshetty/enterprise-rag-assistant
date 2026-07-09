@@ -81,6 +81,27 @@ class KnowledgeBaseService:
         self._embedding_model: Any | None = None
         self._chroma_client: Any | None = None
 
+    def list_clients(self) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute("SELECT id, name, slug, created_at FROM clients ORDER BY name").fetchall()
+            result = []
+            for row in rows:
+                project_count = connection.execute(
+                    "SELECT COUNT(*) FROM projects WHERE client_id = ?", (row["id"],)
+                ).fetchone()[0]
+                document_count = connection.execute(
+                    "SELECT COUNT(*) FROM documents WHERE client_id = ?", (row["id"],)
+                ).fetchone()[0]
+                result.append({
+                    "id": row["id"],
+                    "name": row["name"],
+                    "slug": row["slug"],
+                    "created_at": row["created_at"],
+                    "project_count": project_count,
+                    "document_count": document_count,
+                })
+            return result
+
     def list_projects(self, client_id: int) -> list[dict[str, Any]]:
         with self.database.connect() as connection:
             projects = connection.execute(
@@ -770,6 +791,134 @@ class KnowledgeBaseService:
             filename = f"{project['slug']}_context_export.xlsx"
 
         return payload, filename, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    def delete_project(self, client_id: int, project_id: int) -> dict[str, Any]:
+        """Delete a project, its documents, chunks, chroma collection, and uploaded files."""
+        project = self.get_project(client_id, project_id)
+
+        # 1. Delete ChromaDB collection
+        try:
+            if chromadb is not None:
+                if self._chroma_client is None:
+                    self._chroma_client = chromadb.PersistentClient(path=str(self.settings.chroma_path))
+                collection_name = self._collection_name(project)
+                try:
+                    self._chroma_client.delete_collection(collection_name)
+                except Exception:
+                    pass  # Collection may not exist
+        except Exception:
+            pass
+
+        # 2. Delete uploaded files from disk
+        project_root = self.settings.upload_path / project["client_slug"] / project["slug"]
+        if project_root.exists():
+            import shutil
+            try:
+                shutil.rmtree(project_root)
+            except Exception:
+                pass
+
+        # 3. Delete from database (cascading via schema)
+        with self.database.connect() as connection:
+            connection.execute("DELETE FROM document_chunks WHERE client_id = ? AND project_id = ?", (client_id, project_id))
+            connection.execute("DELETE FROM documents WHERE client_id = ? AND project_id = ?", (client_id, project_id))
+            connection.execute("DELETE FROM chats WHERE client_id = ? AND project_id = ?", (client_id, project_id))
+            connection.execute("DELETE FROM retrieval_events WHERE client_id = ? AND project_id = ?", (client_id, project_id))
+            connection.execute("DELETE FROM projects WHERE id = ? AND client_id = ?", (project_id, client_id))
+            connection.commit()
+
+        return {"deleted": True, "project_id": project_id, "project_name": project["name"]}
+
+    def delete_client(self, client_id: int) -> dict[str, Any]:
+        """Delete a client and ALL associated data across all projects."""
+        with self.database.connect() as connection:
+            client = connection.execute(
+                "SELECT id, name, slug FROM clients WHERE id = ?", (client_id,)
+            ).fetchone()
+            if client is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+
+            # Get all projects for ChromaDB cleanup
+            projects = connection.execute(
+                "SELECT slug FROM projects WHERE client_id = ?", (client_id,)
+            ).fetchall()
+
+        # 1. Delete ChromaDB collections for all projects
+        try:
+            if chromadb is not None:
+                if self._chroma_client is None:
+                    self._chroma_client = chromadb.PersistentClient(path=str(self.settings.chroma_path))
+                client_slug = client["slug"]
+                for project_row in projects:
+                    project_slug = project_row["slug"]
+                    collection_name = f"{client_slug}__{project_slug}"
+                    try:
+                        self._chroma_client.delete_collection(collection_name)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 2. Delete uploaded files from disk
+        client_upload_root = self.settings.upload_path / client["slug"]
+        if client_upload_root.exists():
+            import shutil
+            try:
+                shutil.rmtree(client_upload_root)
+            except Exception:
+                pass
+
+        # 3. Delete from database (cascading via schema)
+        with self.database.connect() as connection:
+            connection.execute("DELETE FROM document_chunks WHERE client_id = ?", (client_id,))
+            connection.execute("DELETE FROM documents WHERE client_id = ?", (client_id,))
+            connection.execute("DELETE FROM chats WHERE client_id = ?", (client_id,))
+            connection.execute("DELETE FROM retrieval_events WHERE client_id = ?", (client_id,))
+            connection.execute("DELETE FROM sessions WHERE client_id = ?", (client_id,))
+            connection.execute("DELETE FROM users WHERE client_id = ?", (client_id,))
+            connection.execute("DELETE FROM projects WHERE client_id = ?", (client_id,))
+            connection.execute("DELETE FROM clients WHERE id = ?", (client_id,))
+            connection.commit()
+
+        return {"deleted": True, "client_id": client_id, "client_name": client["name"]}
+
+    def delete_document(self, client_id: int, project_id: int, document_id: int) -> dict[str, Any]:
+        """Delete a single document, its chunks, uploaded file, and chroma entries."""
+        with self.database.connect() as connection:
+            doc = connection.execute(
+                "SELECT id, file_name, storage_path, file_type FROM documents WHERE id = ? AND client_id = ? AND project_id = ?",
+                (document_id, client_id, project_id),
+            ).fetchone()
+            if doc is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+            # Delete from SQLite
+            connection.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
+            connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+            connection.commit()
+
+        # Delete uploaded file from disk
+        if doc["storage_path"]:
+            stored_path = Path(doc["storage_path"])
+            if stored_path.exists():
+                try:
+                    stored_path.unlink()
+                except Exception:
+                    pass
+
+        # Delete from ChromaDB - get all chunk IDs for this document
+        project = self.get_project(client_id, project_id)
+        try:
+            if chromadb is not None:
+                collection = self._get_chroma_collection(project)
+                # Query for all entries with this document_id
+                existing = collection.get(where={"document_id": str(document_id)})
+                if existing and existing.get("ids"):
+                    collection.delete(ids=existing["ids"])
+        except Exception:
+            pass
+
+        return {"deleted": True, "document_id": document_id, "file_name": doc["file_name"]}
 
     def recent_retrieval_events(self, client_id: int, project_id: int, limit: int = 20) -> list[dict[str, Any]]:
         with self.database.connect() as connection:
