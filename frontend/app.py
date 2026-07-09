@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+import sys
 from typing import Any
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+import pandas as pd
+import plotly.express as px
 import requests
 import streamlit as st
 
@@ -11,12 +20,37 @@ from backend.app.core.config import get_settings
 
 settings = get_settings()
 BACKEND_URL = f"http://{settings.backend_host}:{settings.backend_port}"
-DEFAULT_DEMO_LOGIN = "acme_admin"
+DEFAULT_DEMO_LOGIN = "local_admin"
 DEFAULT_DEMO_PASSWORD = "Password123!"
 
 st.set_page_config(page_title="InsightHub", layout="wide", page_icon="IH")
-st.title("InsightHub")
-st.caption("Enterprise Research Knowledge Assistant")
+
+st.markdown(
+    """
+    <style>
+    .app-shell {
+        padding-top: 0.5rem;
+    }
+    .hero {
+        background: linear-gradient(135deg, rgba(19, 34, 56, 0.96), rgba(30, 58, 86, 0.95));
+        color: white;
+        border-radius: 1.25rem;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.18);
+    }
+    .card {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 1rem;
+        padding: 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<div class="hero"><h1 style="margin:0;">InsightHub</h1><p style="margin:0.35rem 0 0 0;">Enterprise Research Knowledge Assistant</p></div>', unsafe_allow_html=True)
 
 
 def init_state() -> None:
@@ -28,9 +62,12 @@ def init_state() -> None:
         "selected_project_id": None,
         "selected_project": None,
         "project_stats": None,
+        "dashboard_summary": None,
         "project_documents": [],
         "chat_history": [],
+        "export_files": {},
         "workspace_error": None,
+        "last_synced_at": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -50,7 +87,7 @@ def api_request(method: str, path: str, *, json_payload: dict[str, Any] | None =
         headers=headers,
         json=json_payload,
         files=files,
-        timeout=60,
+        timeout=90,
     )
     if response.ok:
         return response.json()
@@ -65,9 +102,45 @@ def refresh_workspace() -> None:
     workspace = api_request("GET", "/projects")
     st.session_state.client = workspace["client"]
     st.session_state.projects = workspace["items"]
+    st.session_state.dashboard_summary = api_request("GET", "/dashboard")
     if st.session_state.projects and st.session_state.selected_project_id is None:
         st.session_state.selected_project_id = st.session_state.projects[0]["id"]
     sync_selected_project()
+    st.session_state.last_synced_at = datetime.utcnow().isoformat(timespec="seconds")
+
+
+def create_project() -> None:
+    project_name = st.session_state.get("new_project_name", "").strip()
+    project_description = st.session_state.get("new_project_description", "").strip()
+    project_slug = st.session_state.get("new_project_slug", "").strip()
+    payload: dict[str, Any] = {"name": project_name, "description": project_description}
+    if project_slug:
+        payload["slug"] = project_slug
+    created_project = api_request("POST", "/projects", json_payload=payload)
+    st.session_state.new_project_name = ""
+    st.session_state.new_project_description = ""
+    st.session_state.new_project_slug = ""
+    refresh_workspace()
+    st.session_state.selected_project_id = created_project["id"]
+    sync_selected_project()
+
+
+def fetch_export_file(export_kind: str) -> tuple[bytes, str]:
+    selected_project = st.session_state.selected_project
+    if not selected_project:
+        raise RuntimeError("No project selected")
+    response = requests.get(
+        f"{BACKEND_URL}/projects/{selected_project['id']}/exports/{export_kind}",
+        headers={"X-Auth-Token": st.session_state.auth_token},
+        timeout=120,
+    )
+    if not response.ok:
+        raise RuntimeError(response.text)
+    content_disposition = response.headers.get("Content-Disposition", "")
+    filename = f"{selected_project['slug']}_{export_kind}.xlsx"
+    if "filename=" in content_disposition:
+        filename = content_disposition.split("filename=")[-1].strip('"')
+    return response.content, filename
 
 
 def sync_selected_project() -> None:
@@ -80,6 +153,7 @@ def sync_selected_project() -> None:
     st.session_state.selected_project = api_request("GET", f"/projects/{selected_id}")
     st.session_state.project_stats = api_request("GET", f"/projects/{selected_id}/stats")
     st.session_state.project_documents = api_request("GET", f"/projects/{selected_id}/documents")["items"]
+    st.session_state.export_files = {}
 
 
 if st.session_state.auth_token and not st.session_state.projects:
@@ -96,20 +170,22 @@ with st.sidebar:
         st.success(f"Signed in as {st.session_state.user['full_name']}")
         if st.session_state.client:
             st.write(f"Client: {st.session_state.client['name']}")
+        st.caption(f"Last synced: {st.session_state.last_synced_at or 'never'}")
+        refresh_clicked = st.button("Refresh workspace", use_container_width=True)
+        if refresh_clicked:
+            with st.spinner("Refreshing project data..."):
+                refresh_workspace()
+                st.rerun()
         if st.session_state.projects:
-            project_options = {f"{project['name']}": project for project in st.session_state.projects}
-            selected_label = st.selectbox(
-                "Active project",
-                list(project_options.keys()),
-                index=0 if st.session_state.selected_project_id is None else list(project_options.keys()).index(
-                    next(
-                        label
-                        for label, project in project_options.items()
-                        if project["id"] == st.session_state.selected_project_id
-                    )
-                ),
-            )
-            selected_project = project_options[selected_label]
+            project_names = [project["name"] for project in st.session_state.projects]
+            current_index = 0
+            if st.session_state.selected_project_id is not None:
+                for index, project in enumerate(st.session_state.projects):
+                    if project["id"] == st.session_state.selected_project_id:
+                        current_index = index
+                        break
+            selected_label = st.selectbox("Active project", project_names, index=current_index)
+            selected_project = next(project for project in st.session_state.projects if project["name"] == selected_label)
             if selected_project["id"] != st.session_state.selected_project_id:
                 st.session_state.selected_project_id = selected_project["id"]
                 sync_selected_project()
@@ -125,18 +201,41 @@ with st.sidebar:
                 "selected_project_id",
                 "selected_project",
                 "project_stats",
+                "dashboard_summary",
                 "project_documents",
                 "chat_history",
+                "export_files",
                 "workspace_error",
+                "last_synced_at",
             ]:
-                st.session_state[key] = None if key not in {"projects", "chat_history"} else ([] if key == "projects" else [])
+                if key == "projects":
+                    st.session_state[key] = []
+                elif key in {"chat_history", "export_files"}:
+                    st.session_state[key] = [] if key == "chat_history" else {}
+                else:
+                    st.session_state[key] = None
             st.rerun()
+        st.divider()
+        st.subheader("Create project")
+        with st.form("create_project_form", clear_on_submit=False):
+            st.text_input("Project name", key="new_project_name", placeholder="My Research Project")
+            st.text_input("Project slug (optional)", key="new_project_slug", placeholder="my-research-project")
+            st.text_area("Description (optional)", key="new_project_description", placeholder="What this project is for")
+            create_clicked = st.form_submit_button("Create project")
+        if create_clicked:
+            try:
+                with st.spinner("Creating project..."):
+                    create_project()
+                st.success("Project created successfully.")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
     else:
         st.info("Not signed in")
 
 if not st.session_state.auth_token:
     st.subheader("Login")
-    st.caption("Demo accounts: acme_admin / Password123! or northstar_admin / Password123!")
+    st.caption("Use the local admin account created during database initialization.")
     with st.form("login_form"):
         login = st.text_input("Username or email", value=DEFAULT_DEMO_LOGIN)
         password = st.text_input("Password", type="password", value=DEFAULT_DEMO_PASSWORD)
@@ -174,7 +273,7 @@ if st.session_state.workspace_error:
 
 selected_project = st.session_state.selected_project
 if not selected_project:
-    st.info("Select a project in the sidebar to load its knowledge base.")
+    st.info("Create a project in the sidebar, then select it to load your own documents.")
     st.stop()
 
 st.subheader(selected_project["name"])
@@ -191,14 +290,32 @@ if stats.get("category_counts"):
     st.caption("Document categories")
     st.write(stats["category_counts"])
 
-overview_tab, documents_tab, upload_tab, chat_tab = st.tabs(["Overview", "Documents", "Upload", "Chat"])
+summary_tab, documents_tab, upload_tab, chat_tab, exports_tab = st.tabs(["Overview", "Documents", "Upload", "Chat", "Exports"])
 
-with overview_tab:
+with summary_tab:
     st.write(f"Client: **{st.session_state.client['name']}**")
     st.write(f"Project slug: `{selected_project['slug']}`")
+    dashboard_summary = st.session_state.dashboard_summary or {}
+    dashboard_metrics = st.columns(4)
+    dashboard_metrics[0].metric("Total clients", dashboard_summary.get("total_clients", 0))
+    dashboard_metrics[1].metric("Total projects", dashboard_summary.get("total_projects", 0))
+    dashboard_metrics[2].metric("Total retrievals", dashboard_summary.get("total_retrievals", 0))
+    dashboard_metrics[3].metric("Total chats", dashboard_summary.get("total_chats", 0))
+    if dashboard_summary.get("category_counts"):
+        category_frame = pd.DataFrame(
+            [{"category": category, "count": count} for category, count in dashboard_summary["category_counts"].items()]
+        )
+        fig = px.bar(category_frame, x="category", y="count", title="Client category mix")
+        st.plotly_chart(fig, use_container_width=True)
     if stats.get("recent_uploads"):
         st.markdown("### Recent uploads")
         st.dataframe(stats["recent_uploads"], use_container_width=True, hide_index=True)
+    if dashboard_summary.get("recent_queries"):
+        st.markdown("### Recent retrieval activity")
+        st.dataframe(dashboard_summary["recent_queries"], use_container_width=True, hide_index=True)
+    if dashboard_summary.get("projects"):
+        st.markdown("### Project overview")
+        st.dataframe(dashboard_summary["projects"], use_container_width=True, hide_index=True)
 
 with documents_tab:
     st.markdown("### Indexed documents")
@@ -215,11 +332,12 @@ with upload_tab:
     )
     if st.button("Process upload", disabled=upload_file is None, use_container_width=True):
         try:
-            upload_result = api_request(
-                "POST",
-                f"/projects/{selected_project['id']}/documents/upload",
-                files={"file": (upload_file.name, upload_file.getvalue(), upload_file.type or "application/octet-stream")},
-            )
+            with st.spinner("Extracting, chunking, and indexing document..."):
+                upload_result = api_request(
+                    "POST",
+                    f"/projects/{selected_project['id']}/documents/upload",
+                    files={"file": (upload_file.name, upload_file.getvalue(), upload_file.type or "application/octet-stream")},
+                )
             st.success(f"Indexed {upload_result['file_name']} as {upload_result['category']} with {upload_result['chunk_count']} chunks.")
             sync_selected_project()
             st.rerun()
@@ -231,20 +349,25 @@ with chat_tab:
     question = st.text_input("Question", placeholder="What did respondents say about pricing?")
     if st.button("Ask", use_container_width=True, disabled=not question.strip()):
         try:
-            response = api_request(
-                "POST",
-                f"/projects/{selected_project['id']}/chat/ask",
-                json_payload={"question": question},
-            )
+            with st.spinner("Retrieving and verifying grounded response..."):
+                response = api_request(
+                    "POST",
+                    f"/projects/{selected_project['id']}/chat/ask",
+                    json_payload={"question": question},
+                )
             st.session_state.chat_history.insert(0, response)
         except Exception as exc:
             st.error(str(exc))
 
     if st.session_state.chat_history:
         for entry in st.session_state.chat_history:
-            with st.container(border=True):
-                st.markdown(f"**Query:** {entry['query']}")
-                st.write(entry["answer"])
+            with st.chat_message("user"):
+                st.markdown(entry.get("original_query", entry["query"]))
+            with st.chat_message("assistant"):
+                st.markdown(entry["answer"])
+                status_label = entry.get("verification_status", "pending")
+                notes = entry.get("verification_notes", "")
+                st.caption(f"Verification: {status_label}" + (f" | {notes}" if notes else ""))
                 if entry.get("sources"):
                     with st.expander("Sources"):
                         for source in entry["sources"]:
@@ -254,3 +377,53 @@ with chat_tab:
                             st.caption(source.get("snippet", ""))
     else:
         st.info("No chat history yet.")
+
+with exports_tab:
+    st.markdown("### Export project knowledge")
+    export_columns = st.columns(3)
+    with export_columns[0]:
+        if st.button("Prepare chat export", use_container_width=True):
+            try:
+                st.session_state.export_files["chat"] = fetch_export_file("chat")
+            except Exception as exc:
+                st.error(str(exc))
+        if "chat" in st.session_state.export_files:
+            chat_bytes, chat_name = st.session_state.export_files["chat"]
+            st.download_button(
+                "Download chat export file",
+                data=chat_bytes,
+                file_name=chat_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+    with export_columns[1]:
+        if st.button("Prepare summary export", use_container_width=True):
+            try:
+                st.session_state.export_files["summary"] = fetch_export_file("summary")
+            except Exception as exc:
+                st.error(str(exc))
+        if "summary" in st.session_state.export_files:
+            summary_bytes, summary_name = st.session_state.export_files["summary"]
+            st.download_button(
+                "Download summary export file",
+                data=summary_bytes,
+                file_name=summary_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+    with export_columns[2]:
+        if st.button("Prepare context export", use_container_width=True):
+            try:
+                st.session_state.export_files["context"] = fetch_export_file("context")
+            except Exception as exc:
+                st.error(str(exc))
+        if "context" in st.session_state.export_files:
+            context_bytes, context_name = st.session_state.export_files["context"]
+            st.download_button(
+                "Download context export file",
+                data=context_bytes,
+                file_name=context_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+    st.caption("Exports are generated from the selected project and include citations, summaries, or supporting context depending on the export type.")

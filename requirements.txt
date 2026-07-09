@@ -12,3 +12,5 @@ python-pptx
 openpyxl
 chromadb
 sentence-transformers
+langgraph
+plotly

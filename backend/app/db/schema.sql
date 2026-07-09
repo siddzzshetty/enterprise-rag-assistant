@@ -76,6 +76,23 @@ CREATE TABLE IF NOT EXISTS chats (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS retrieval_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    original_query TEXT NOT NULL,
+    rewritten_query TEXT NOT NULL,
+    top_document_id INTEGER,
+    top_document_name TEXT NOT NULL DEFAULT '',
+    top_chunk_score REAL NOT NULL DEFAULT 0,
+    verification_status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,

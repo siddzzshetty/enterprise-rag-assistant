@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 import hashlib
 import json
 import math
@@ -103,6 +105,37 @@ class KnowledgeBaseService:
                 })
             return result
 
+    def create_project(self, client_id: int, name: str, description: str = "", slug: str | None = None) -> dict[str, Any]:
+        project_name = name.strip()
+        project_description = description.strip()
+        project_slug = self._slugify(slug or project_name)
+
+        if not project_name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Project name is required")
+        if not project_slug:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Project slug could not be generated")
+
+        with self.database.connect() as connection:
+            unique_slug = project_slug
+            suffix = 2
+            while connection.execute(
+                "SELECT 1 FROM projects WHERE client_id = ? AND slug = ?",
+                (client_id, unique_slug),
+            ).fetchone() is not None:
+                unique_slug = f"{project_slug}-{suffix}"
+                suffix += 1
+
+            cursor = connection.execute(
+                """
+                INSERT INTO projects (client_id, name, slug, description)
+                VALUES (?, ?, ?, ?)
+                """,
+                (client_id, project_name, unique_slug, project_description),
+            )
+            connection.commit()
+
+        return self.get_project(client_id, cursor.lastrowid)
+
     def get_project(self, client_id: int, project_id: int) -> dict[str, Any]:
         with self.database.connect() as connection:
             project = connection.execute(
@@ -127,6 +160,10 @@ class KnowledgeBaseService:
                 "client_slug": project["client_slug"],
                 **counts,
             }
+
+    def _slugify(self, value: str) -> str:
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower())
+        return slug.strip("-")
 
     def list_documents(self, client_id: int, project_id: int) -> list[dict[str, Any]]:
         with self.database.connect() as connection:
@@ -440,6 +477,325 @@ class KnowledgeBaseService:
             f"Based on the selected project, I found these supporting excerpts for '{question}':\n"
             + "\n".join(f"- {line}" for line in source_lines)
         )
+
+    def rerank_chunks(self, query: str, chunks: list[RetrievedChunk], limit: int | None = None) -> list[RetrievedChunk]:
+        if not chunks:
+            return []
+
+        query_terms = set(re.findall(r"[A-Za-z0-9]+", query.lower()))
+        reranked: list[RetrievedChunk] = []
+        for chunk in chunks:
+            chunk_terms = set(re.findall(r"[A-Za-z0-9]+", chunk.chunk_text.lower()))
+            overlap = len(query_terms & chunk_terms) / max(1, len(query_terms))
+            combined_score = (0.65 * float(chunk.score)) + (0.35 * overlap)
+            reranked.append(
+                RetrievedChunk(
+                    document_id=chunk.document_id,
+                    document_name=chunk.document_name,
+                    file_type=chunk.file_type,
+                    category=chunk.category,
+                    chunk_index=chunk.chunk_index,
+                    page_number=chunk.page_number,
+                    section=chunk.section,
+                    chunk_text=chunk.chunk_text,
+                    score=combined_score,
+                    metadata=chunk.metadata,
+                )
+            )
+
+        reranked.sort(key=lambda item: item.score, reverse=True)
+        return reranked[:limit] if limit is not None else reranked
+
+    def verify_answer(
+        self,
+        question: str,
+        rewritten_query: str,
+        answer: str,
+        chunks: list[RetrievedChunk],
+    ) -> tuple[str, str, str]:
+        if not chunks:
+            fallback = (
+                "I could not find sufficient supporting evidence in the selected project to answer that question. "
+                "Try uploading more source material or rephrasing the query."
+            )
+            return fallback, "rejected", "No supporting chunks were retrieved."
+
+        support_terms = set()
+        for chunk in chunks:
+            support_terms.update(re.findall(r"[A-Za-z0-9]+", chunk.chunk_text.lower()))
+
+        answer_terms = set(re.findall(r"[A-Za-z0-9]+", answer.lower()))
+        if not answer_terms:
+            return answer, "accepted", "Answer is empty but treated as supported by retrieval."
+
+        coverage = len(answer_terms & support_terms) / max(1, len(answer_terms))
+        if coverage < 0.15 and "could not find" not in answer.lower() and "not enough" not in answer.lower():
+            fallback = (
+                "I could not verify that answer against the retrieved project evidence. "
+                "The selected project does not appear to contain enough support for a grounded response."
+            )
+            return fallback, "rejected", f"Low evidence coverage ({coverage:.2f})."
+
+        if self.settings.groq_api_key:
+            verification_prompt = (
+                "Review the draft answer against the project evidence. If it is grounded, return the answer unchanged. "
+                "If it is unsupported, return a short fallback message stating that evidence is insufficient. "
+                "Do not add new facts.\n\n"
+                f"Original question: {question}\n"
+                f"Rewritten query: {rewritten_query}\n"
+                f"Draft answer: {answer}\n\n"
+                f"Evidence:\n{self._format_context_block(chunks)}"
+            )
+            response_text = self._groq_chat([
+                {"role": "system", "content": "You verify whether answers are grounded in retrieved evidence."},
+                {"role": "user", "content": verification_prompt},
+            ])
+            if response_text:
+                verified = self._strip_wrappers(response_text)
+                if verified:
+                    status_label = "accepted" if "could not find" not in verified.lower() and "insufficient" not in verified.lower() else "rejected"
+                    notes = "Verified with Groq grounding check." if status_label == "accepted" else "Groq grounding check rejected the answer."
+                    return verified, status_label, notes
+
+        return answer, "accepted", f"Evidence coverage {coverage:.2f}."
+
+    def save_chat_response(
+        self,
+        client_id: int,
+        project_id: int,
+        user_id: int,
+        question: str,
+        answer: str,
+        sources: list[dict[str, Any]],
+    ) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO chats (client_id, project_id, user_id, question, answer, sources)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (client_id, project_id, user_id, question, answer, json.dumps(sources)),
+            )
+            connection.commit()
+
+    def log_retrieval_event(
+        self,
+        client_id: int,
+        project_id: int,
+        user_id: int,
+        original_query: str,
+        rewritten_query: str,
+        top_document_id: int | None,
+        top_document_name: str,
+        top_chunk_score: float,
+        verification_status: str,
+    ) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO retrieval_events (
+                    client_id, project_id, user_id, original_query, rewritten_query,
+                    top_document_id, top_document_name, top_chunk_score, verification_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    client_id,
+                    project_id,
+                    user_id,
+                    original_query,
+                    rewritten_query,
+                    top_document_id,
+                    top_document_name,
+                    top_chunk_score,
+                    verification_status,
+                ),
+            )
+            connection.commit()
+
+    def dashboard_overview(self, client_id: int) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            total_clients = connection.execute(
+                "SELECT COUNT(*) FROM clients WHERE id = ?",
+                (client_id,),
+            ).fetchone()[0]
+            total_projects = connection.execute(
+                "SELECT COUNT(*) FROM projects WHERE client_id = ?",
+                (client_id,),
+            ).fetchone()[0]
+            total_documents = connection.execute(
+                "SELECT COUNT(*) FROM documents WHERE client_id = ?",
+                (client_id,),
+            ).fetchone()[0]
+            total_chunks = connection.execute(
+                "SELECT COUNT(*) FROM document_chunks WHERE client_id = ?",
+                (client_id,),
+            ).fetchone()[0]
+            total_chats = connection.execute(
+                "SELECT COUNT(*) FROM chats WHERE client_id = ?",
+                (client_id,),
+            ).fetchone()[0]
+            total_retrievals = connection.execute(
+                "SELECT COUNT(*) FROM retrieval_events WHERE client_id = ?",
+                (client_id,),
+            ).fetchone()[0]
+
+            recent_uploads = connection.execute(
+                """
+                SELECT d.file_name, d.file_type, d.category, d.status, d.uploaded_at, p.name AS project_name
+                FROM documents d
+                JOIN projects p ON p.id = d.project_id
+                WHERE d.client_id = ?
+                ORDER BY d.uploaded_at DESC
+                LIMIT 10
+                """,
+                (client_id,),
+            ).fetchall()
+            recent_queries = connection.execute(
+                """
+                SELECT original_query, rewritten_query, top_document_name, top_chunk_score, verification_status, created_at
+                FROM retrieval_events
+                WHERE client_id = ?
+                ORDER BY created_at DESC
+                LIMIT 10
+                """,
+                (client_id,),
+            ).fetchall()
+            project_rows = connection.execute(
+                """
+                SELECT p.id, p.name, p.slug, p.description, p.is_active,
+                       COUNT(DISTINCT d.id) AS document_count,
+                       COUNT(DISTINCT dc.id) AS chunk_count,
+                       COUNT(DISTINCT c.id) AS chat_count
+                FROM projects p
+                LEFT JOIN documents d ON d.project_id = p.id
+                LEFT JOIN document_chunks dc ON dc.project_id = p.id
+                LEFT JOIN chats c ON c.project_id = p.id
+                WHERE p.client_id = ?
+                GROUP BY p.id
+                ORDER BY p.name
+                """,
+                (client_id,),
+            ).fetchall()
+
+            categories = connection.execute(
+                """
+                SELECT category, COUNT(*) AS count
+                FROM documents
+                WHERE client_id = ?
+                GROUP BY category
+                ORDER BY count DESC, category ASC
+                """,
+                (client_id,),
+            ).fetchall()
+
+        return {
+            "total_clients": total_clients,
+            "total_projects": total_projects,
+            "total_documents": total_documents,
+            "total_chunks": total_chunks,
+            "total_chats": total_chats,
+            "total_retrievals": total_retrievals,
+            "recent_uploads": [dict(row) for row in recent_uploads],
+            "recent_queries": [dict(row) for row in recent_queries],
+            "projects": [dict(row) for row in project_rows],
+            "category_counts": {row["category"]: row["count"] for row in categories},
+        }
+
+    def recent_chat_history(self, client_id: int, project_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, question, answer, sources, created_at
+                FROM chats
+                WHERE client_id = ? AND project_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (client_id, project_id, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def export_chat_bundle(self, client_id: int, project_id: int, export_kind: str = "chat") -> tuple[bytes, str, str]:
+        project = self.get_project(client_id, project_id)
+        chat_rows = self.recent_chat_history(client_id, project_id, limit=500)
+        stats = self.project_stats(client_id, project_id)
+        documents = self.list_documents(client_id, project_id)
+
+        chat_df = pd.DataFrame(chat_rows)
+        docs_df = pd.DataFrame(documents)
+        summary_df = pd.DataFrame([
+            {
+                "project_name": project["name"],
+                "project_slug": project["slug"],
+                "document_count": stats["document_count"],
+                "chunk_count": stats["chunk_count"],
+                "chat_count": stats["chat_count"],
+                "category_counts": json.dumps(stats["category_counts"]),
+            }
+        ])
+
+        export_kind = export_kind.lower().strip()
+        if export_kind not in {"chat", "summary", "context"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported export kind")
+
+        if export_kind == "chat":
+            payload = self._dataframe_to_excel(
+                {
+                    "chat_history": chat_df,
+                    "documents": docs_df,
+                }
+            )
+            filename = f"{project['slug']}_chat_export.xlsx"
+        elif export_kind == "summary":
+            payload = self._dataframe_to_excel(
+                {
+                    "project_summary": summary_df,
+                    "recent_uploads": pd.DataFrame(stats.get("recent_uploads", [])),
+                    "category_counts": pd.DataFrame(
+                        [{"category": category, "count": count} for category, count in stats.get("category_counts", {}).items()]
+                    ),
+                }
+            )
+            filename = f"{project['slug']}_summary_export.xlsx"
+        else:
+            retrieval_rows = self.recent_retrieval_events(client_id, project_id, limit=100)
+            payload = self._dataframe_to_excel(
+                {
+                    "project_context": summary_df,
+                    "documents": docs_df,
+                    "retrieval_events": pd.DataFrame(retrieval_rows),
+                    "chat_history": chat_df,
+                }
+            )
+            filename = f"{project['slug']}_context_export.xlsx"
+
+        return payload, filename, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    def recent_retrieval_events(self, client_id: int, project_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT original_query, rewritten_query, top_document_id, top_document_name, top_chunk_score,
+                       verification_status, created_at
+                FROM retrieval_events
+                WHERE client_id = ? AND project_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (client_id, project_id, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def _dataframe_to_excel(self, sheet_map: dict[str, pd.DataFrame]) -> bytes:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            for sheet_name, dataframe in sheet_map.items():
+                safe_dataframe = dataframe.copy()
+                if safe_dataframe.empty:
+                    safe_dataframe = pd.DataFrame([{"note": "No rows available"}])
+                safe_dataframe.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+        buffer.seek(0)
+        return buffer.getvalue()
 
     def _project_counts(self, connection: sqlite3.Connection, client_id: int, project_id: int) -> dict[str, int]:
         document_count = connection.execute(

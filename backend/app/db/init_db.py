@@ -11,24 +11,17 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 class SeedData:
     clients = [
-        ("Acme Research", "acme-research"),
-        ("Northstar Analytics", "northstar-analytics"),
+        ("Local Research Workspace", "local-research-workspace"),
     ]
 
     projects = [
-        ("Acme Research", [
-            ("Retail Pricing Study", "retail-pricing-study", "Consumer pricing perceptions across metro markets."),
-            ("Brand Health Tracker", "brand-health-tracker", "Quarterly brand tracking and awareness study."),
-        ]),
-        ("Northstar Analytics", [
-            ("B2B Buying Journey", "b2b-buying-journey", "Decision-making research for enterprise buyers."),
-            ("Customer Satisfaction Audit", "customer-satisfaction-audit", "VoC analysis and satisfaction diagnostics."),
+        ("Local Research Workspace", [
+            ("Getting Started Project", "getting-started-project", "Upload your own documents and ask questions against them."),
         ]),
     ]
 
     users = [
-        ("Acme Research", "admin@acme.com", "acme_admin", "Acme Admin", "Password123!"),
-        ("Northstar Analytics", "admin@northstar.com", "northstar_admin", "Northstar Admin", "Password123!"),
+        ("Local Research Workspace", "admin@localworkspace.com", "local_admin", "Local Admin", "Password123!"),
     ]
 
 

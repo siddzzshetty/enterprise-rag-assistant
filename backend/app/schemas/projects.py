@@ -7,6 +7,12 @@ class ChatQuestionRequest(BaseModel):
     question: str = Field(..., min_length=2)
 
 
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
+    description: str = Field(default="", max_length=500)
+    slug: str | None = Field(default=None, max_length=120)
+
+
 class ProjectSummary(BaseModel):
     id: int
     name: str
