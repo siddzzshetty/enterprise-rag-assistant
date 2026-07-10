@@ -77,6 +77,15 @@ def init_state() -> None:
 init_state()
 
 
+def get_all_clients() -> list[dict[str, Any]]:
+    """Fetch all clients from the API."""
+    try:
+        result = api_request("GET", "/clients")
+        return result.get("items", [])
+    except Exception:
+        return []
+
+
 def api_request(method: str, path: str, *, json_payload: dict[str, Any] | None = None, files: dict[str, Any] | None = None) -> dict[str, Any]:
     headers = {}
     if st.session_state.auth_token:
@@ -195,8 +204,8 @@ with st.sidebar:
     if st.session_state.auth_token:
         st.success(f"Signed in as {st.session_state.user['full_name']}")
     if st.session_state.client:
-        st.write(f"Client: {st.session_state.client['name']}")
-        st.caption(f"Client ID: {st.session_state.client['id']}")
+        st.write(f"Current client: **{st.session_state.client['name']}**")
+        st.caption(f"Logged in as: {st.session_state.user['username']} | Client ID: {st.session_state.client['id']}")
         st.caption(f"Last synced: {st.session_state.last_synced_at or 'never'}")
         refresh_clicked = st.button("Refresh workspace", use_container_width=True)
         if refresh_clicked:
@@ -278,6 +287,20 @@ with st.sidebar:
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
+        st.divider()
+        st.subheader("All clients")
+        all_clients = get_all_clients()
+        if all_clients:
+            for c in all_clients:
+                is_current = st.session_state.client and c["id"] == st.session_state.client["id"]
+                prefix = "▶ " if is_current else "  "
+                st.write(f"{prefix}**{c['name']}** (ID: {c['id']})")
+                st.caption(f"Projects: {c['project_count']} | Docs: {c['document_count']} | Slug: {c['slug']}")
+                if not is_current:
+                    login_hint = f"Login: `{c.get('admin_username', 'admin')}` / Password123!"
+                    st.caption(login_hint)
+        else:
+            st.caption("No other clients found.")
         st.divider()
         st.subheader("Create new client")
         with st.form("create_client_form", clear_on_submit=False):
