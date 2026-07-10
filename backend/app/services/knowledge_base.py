@@ -665,12 +665,20 @@ class KnowledgeBaseService:
         if "income" in question_lower or "salary" in question_lower or "earn" in question_lower:
             # Look for income patterns like "₹X Lakhs" or "₹X–Y Lakhs"
             income_patterns = set(re.findall(r"(₹\d+(?:-|to)\d+)\s*Lakhs?|₹\d+\s*Lakhs?", all_text, re.IGNORECASE))
-            # Also look for "Annual Household Income" column values
-            income_values = set(re.findall(r"(₹\d+(?:-|to)\d+)\s*Lakhs?", all_text, re.IGNORECASE))
-            if income_patterns or income_values:
-                values = sorted(set(income_patterns) | set(income_values))[:6]
-                if values:
-                    return f"Income ranges: {', '.join(values)}"
+            if income_patterns:
+                values = sorted(income_patterns)[:6]
+                return f"Income ranges: {', '.join(values)}"
+        
+        if "gender" in question_lower or "male" in question_lower or "female" in question_lower:
+            # Look for gender distribution
+            genders = set(re.findall(r"\b(Male|Female)\b", all_text))
+            if genders:
+                # Count occurrences
+                male_count = len(re.findall(r"\bMale\b", all_text))
+                female_count = len(re.findall(r"\bFemale\b", all_text))
+                if male_count and female_count:
+                    return f"Gender distribution: {male_count} Male, {female_count} Female"
+                return f"Genders found: {', '.join(sorted(genders))}"
         
         # For any other question type, do NOT return random text
         return "I could not find this information in the uploaded documents."
