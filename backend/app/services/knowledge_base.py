@@ -644,51 +644,68 @@ class KnowledgeBaseService:
     def _aggregate_values_from_chunks(self, question: str, chunks: list[RetrievedChunk]) -> str:
         """Extract and aggregate unique values from chunks when LLM is unavailable.
         
-        This provides a reliable fallback using regex pattern matching on the retrieved chunks.
-        Works for ALL question types without external LLM dependency.
+        Note: For count-based questions, we need to query the full document since chunks are a small sample.
         """
         question_lower = question.lower()
-        all_text = " ".join(c.chunk_text[:500] for c in chunks[:10])  # Limit text for performance
         doc_name = chunks[0].document_name if chunks else "document"
+        project_id = chunks[0].metadata.get("project_id") if chunks else None
+        client_id = chunks[0].metadata.get("client_id") if chunks else None
         
-        # Demographic questions
+        # For count-based questions, query full document for accurate counts
+        if ("gender" in question_lower or "male" in question_lower or "female" in question_lower) and project_id and client_id:
+            full_counts = self._get_full_document_counts(client_id, project_id)
+            if full_counts:
+                male, female = full_counts.get("male", 0), full_counts.get("female", 0)
+                if male and female:
+                    return f"Gender distribution: {male} Male, {female} Female [{doc_name}]"
+        
+        # For other questions, analyze provided chunks
         if "city" in question_lower or "location" in question_lower or "where" in question_lower:
-            candidates = re.findall(r"\b([A-Z][a-z]+)\b", all_text)
-            freq = Counter(candidates)
+            all_candidates = []
+            for c in chunks:
+                all_candidates.extend(re.findall(r"\b([A-Z][a-z]+)\b", c.chunk_text))
+            freq = Counter(all_candidates)
             common = set(w.lower() for w in "the this that these those sheet final base column row data value item name".split())
-            values = [c for c, n in freq.items() if n >= 2 and c.lower() not in common]
+            values = [c for c, n in freq.items() if n >= 4 and c.lower() not in common]
             if values:
                 return f"Cities: {', '.join(sorted(set(values))[:8])} [{doc_name}]"
         
         if "age" in question_lower or "year" in question_lower or "month" in question_lower:
-            ages = set(re.findall(r"(\d+\s*(?:-|to)\s*\d+\s*(?:year|month))", all_text, re.IGNORECASE))
-            if ages:
-                return f"Age groups: {', '.join(sorted(ages)[:6])} [{doc_name}]"
-        
-        if "gender" in question_lower or "male" in question_lower or "female" in question_lower:
-            male_count = len(re.findall(r"\bMale\b", all_text))
-            female_count = len(re.findall(r"\bFemale\b", all_text))
-            if male_count and female_count:
-                return f"Gender distribution: {male_count} Male, {female_count} Female [{doc_name}]"
+            all_ages = set()
+            for c in chunks:
+                all_ages.update(re.findall(r"(\d+\s*(?:-|to)\s*\d+\s*(?:year|month))", c.chunk_text, re.IGNORECASE))
+            if all_ages:
+                return f"Age groups: {', '.join(sorted(all_ages)[:6])} [{doc_name}]"
         
         if "income" in question_lower or "salary" in question_lower or "earn" in question_lower:
-            income_patterns = set(re.findall(r"(₹\d+(?:-|to)\d+)\s*Lakhs?", all_text, re.IGNORECASE))
-            if income_patterns:
-                return f"Income ranges: {', '.join(sorted(income_patterns)[:6])} [{doc_name}]"
-        
-        # Sample size questions
-        if "sample" in question_lower or "respondent" in question_lower or "n=" in question_lower:
-            sample_patterns = re.findall(r"(?:n\s*=\s*|who saw concept|Base).*?(\d{2,3})", all_text, re.IGNORECASE)
-            if sample_patterns:
-                return f"Sample size: {sample_patterns[0]} respondents [{doc_name}]"
-        
-        # Product/plan questions
-        if "product" in question_lower or "plan" in question_lower or "concept" in question_lower:
-            products = set(re.findall(r"(?:Gold Child Insurance|SmartKid 360|SmartKid Assure|Gift Select|360\+Assure)", all_text, re.IGNORECASE))
-            if products:
-                return f"Plans: {', '.join(sorted(products))} [{doc_name}]"
+            all_income = set()
+            for c in chunks:
+                all_income.update(re.findall(r"(₹\d+(?:-|to)\d+)\s*Lakhs?", c.chunk_text, re.IGNORECASE))
+            if all_income:
+                return f"Income ranges: {', '.join(sorted(all_income)[:6])} [{doc_name}]"
         
         return "I could not find this information in the uploaded documents."
+
+    def _get_full_document_counts(self, client_id: int, project_id: int) -> dict[str, int]:
+        """Get full counts from entire document for accurate statistics.
+        
+        Queries all chunks in the database to get accurate counts for gender, etc.
+        """
+        with self.database.connect() as connection:
+            # Query all chunks for gender counts
+            male_result = connection.execute(
+                "SELECT COUNT(*) as count FROM document_chunks WHERE client_id = ? AND project_id = ? AND chunk_text LIKE ?",
+                (client_id, project_id, "% Male%"),
+            ).fetchone()
+            female_result = connection.execute(
+                "SELECT COUNT(*) as count FROM document_chunks WHERE client_id = ? AND project_id = ? AND chunk_text LIKE ?",
+                (client_id, project_id, "% Female%"),
+            ).fetchone()
+            
+            return {
+                "male": male_result["count"] if male_result else 0,
+                "female": female_result["count"] if female_result else 0,
+            }
 
     def rerank_chunks(self, query: str, chunks: list[RetrievedChunk], limit: int | None = None) -> list[RetrievedChunk]:
         """Rerank chunks using BGE-Reranker-v2-M3 or multi-signal heuristic fallback.
