@@ -1296,25 +1296,28 @@ class KnowledgeBaseService:
     def _groq_chat(self, messages: list[dict[str, str]]) -> str:
         if not self.settings.groq_api_key:
             return ""
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.settings.groq_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.settings.groq_model,
-                "messages": messages,
-                "temperature": 0.1,
-            },
-            timeout=45,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        choices = payload.get("choices", [])
-        if not choices:
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.settings.groq_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.settings.groq_model,
+                    "messages": messages,
+                    "temperature": 0.1,
+                },
+                timeout=45,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            choices = payload.get("choices", [])
+            if not choices:
+                return ""
+            return choices[0]["message"]["content"].strip()
+        except Exception:
             return ""
-        return choices[0]["message"]["content"].strip()
 
     def _hash_embedding(self, text: str, dimensions: int = 384) -> list[float]:
         vector = [0.0] * dimensions
