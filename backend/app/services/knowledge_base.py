@@ -1543,7 +1543,7 @@ class KnowledgeBaseService:
 
     def _huggingface_chat(self, messages: list[dict[str, str]]) -> str:
         """Use Hugging Face Inference API for LLM calls."""
-        # Format messages for Llama-3.1-8B-Instruct chat template
+        # Format messages for Llama-3-8B-Instruct chat template
         formatted_prompt = ""
         for msg in messages:
             role = msg.get("role", "user")
@@ -1558,7 +1558,7 @@ class KnowledgeBaseService:
         
         try:
             response = requests.post(
-                "https://api-inference.huggingface.co/models/meta-llama/Llama-3.1-8B-Instruct",
+                "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct",
                 headers={
                     "Authorization": f"Bearer {self.settings.groq_api_key}",
                     "Content-Type": "application/json",
@@ -1566,10 +1566,9 @@ class KnowledgeBaseService:
                 json={
                     "inputs": formatted_prompt,
                     "parameters": {
-                        "max_new_tokens": 512,
+                        "max_new_tokens": 256,
                         "temperature": 0.1,
                         "top_p": 0.95,
-                        "do_sample": True,
                     },
                 },
                 timeout=60,
