@@ -29,6 +29,7 @@ class RagState:
     top_document_id: int | None = None
     top_document_name: str = ""
     top_chunk_score: float = 0.0
+    debug_info: dict[str, Any] = None  # type: ignore
 
 
 def _asdict(state: RagState) -> dict[str, Any]:
@@ -47,16 +48,14 @@ class IntelligentRAGWorkflow:
         self.service = service
         self._graph = self._build_graph() if StateGraph is not None else None
 
-    def run(self, client_id: int, project_id: int, user_id: int, question: str) -> dict[str, Any]:
-        state = RagState(client_id=client_id, project_id=project_id, user_id=user_id, question=question)
+    def run(self, client_id: int, project_id: int, user_id: int, question: str, debug: bool = False) -> dict[str, Any]:
+        state = RagState(client_id=client_id, project_id=project_id, user_id=user_id, question=question, debug_info={})
         if self._graph is not None:
-            # Convert to dict for langgraph
             state_dict = _asdict(state)
             result = self._graph.invoke(state_dict)
         else:
-            # For fallback, use dict directly
-            state_dict = asdict(state) if hasattr(state, "__dict__") else {"client_id": client_id, "project_id": project_id, "user_id": user_id, "question": question}
-            result = self._fallback_run(state_dict)
+            state_dict = asdict(state) if hasattr(state, "__dict__") else {"client_id": client_id, "project_id": project_id, "user_id": user_id, "question": question, "debug_info": {}}
+            result = self._fallback_run(state_dict, debug=debug)
         return self._finalize(result)
 
     def _build_graph(self):
