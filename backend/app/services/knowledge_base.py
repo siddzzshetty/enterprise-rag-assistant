@@ -644,29 +644,35 @@ class KnowledgeBaseService:
         """Extract and aggregate unique values from chunks when LLM is unavailable."""
         question_lower = question.lower()
         all_text = " ".join(c.chunk_text for c in chunks)
-        chunk = chunks[0]
         
-        # Generic extraction: find frequently repeating values that look like entities
-        # This works for ANY dataset without hardcoding specific values
+        # Generic extraction - only answer if we find clear patterns
+        # NEVER return raw text that doesn't match the question
         
         if "city" in question_lower or "location" in question_lower or "where" in question_lower:
-            # Extract capitalized words that appear multiple times (likely city names)
             candidates = re.findall(r"\b([A-Z][a-z]+)\b", all_text)
             freq = Counter(candidates)
-            # Generic filter for common non-entity words
             common = set(w.lower() for w in "the this that these those sheet final base column row data value item name".split())
             values = [c for c, n in freq.items() if n >= 2 and c.lower() not in common]
             if values:
-                return f"Locations: {', '.join(sorted(set(values))[:8])} [{chunk.document_name}]"
+                return f"Locations: {', '.join(sorted(set(values))[:8])}"
         
         if "age" in question_lower or "year" in question_lower or "month" in question_lower:
-            # Extract any age/range patterns
             ages = set(re.findall(r"(\d+\s*(?:-|to)\s*\d+\s*(?:year|month))", all_text, re.IGNORECASE))
             if ages:
-                return f"Age groups: {', '.join(sorted(ages)[:6])} [{chunk.document_name}]"
+                return f"Age groups: {', '.join(sorted(ages)[:6])}"
         
-        # Default fallback
-        return f"{self._trim_sentence(chunk.chunk_text, 200)}... [{chunk.document_name}]"
+        if "income" in question_lower or "salary" in question_lower or "earn" in question_lower:
+            # Look for income patterns like "₹X" or "Rs X" or currency amounts
+            income_patterns = re.findall(r"(?:₹|Rs\.?\s*|INR\s*)(?:₹|Rs\.?\s*|INR\s*)?\d+(?:,\d+)?", all_text, re.IGNORECASE)
+            amounts = set(re.findall(r"\d+(?:,\d+)?", all_text) if income_patterns else [])
+            # Also look for income ranges
+            income_ranges = set(re.findall(r"\d+\s*(?:-|to)\s*\d+\s*(?:lakh|thousand|rs|₹)", all_text, re.IGNORECASE))
+            if income_ranges or amounts:
+                values = sorted(set(income_ranges) | set(amounts))[:5]
+                return f"Income values: {', '.join(values)}"
+        
+        # For any other question type, do NOT return random text
+        return "I could not find this information in the uploaded documents."
 
     def rerank_chunks(self, query: str, chunks: list[RetrievedChunk], limit: int | None = None) -> list[RetrievedChunk]:
         """Rerank chunks using BGE-Reranker-v2-M3 or multi-signal heuristic fallback.
