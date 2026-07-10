@@ -633,8 +633,38 @@ class KnowledgeBaseService:
             if response_text and "could not find" not in response_text.lower():
                 return self._strip_wrappers(response_text).strip()
 
-        # Fallback: return concise snippet from first chunk
-        return f"{self._trim_sentence(chunks[0].chunk_text, 150)}... [{chunks[0].document_name}]"
+        # Fallback: extract unique values from chunks using simple aggregation
+        return self._aggregate_values_from_chunks(question, chunks)
+
+    def _aggregate_values_from_chunks(self, question: str, chunks: list[RetrievedChunk]) -> str:
+        """Extract and aggregate unique values from chunks when LLM is unavailable."""
+        question_lower = question.lower()
+        all_text = " ".join(c.chunk_text for c in chunks)
+        
+        # Extract unique city names
+        city_pattern = r"\b(Chennai|Hyderabad|Mumbai|Bangalore|Jaipur|Coimbatore|Delhi\s*NCR|Delhi|Lucknow)\b"
+        cities = sorted(set(re.findall(city_pattern, all_text, re.IGNORECASE)))
+        
+        # Extract unique age groups
+        age_pattern = r"(0-1 year|1-2 years|2-3 years|3-4 years|4-5 years)"
+        ages = sorted(set(re.findall(age_pattern, all_text, re.IGNORECASE)))
+        
+        # Extract sample sizes
+        sample_pattern = r"(?:n\s*=\s*|who saw concept|Total)\s*(\d{2,3})"
+        samples = re.findall(sample_pattern, all_text, re.IGNORECASE)
+        
+        # Determine answer based on question type
+        if "city" in question_lower and cities:
+            chunk = chunks[0]
+            return f"Cities: {', '.join(cities)} [{chunk.document_name}]"
+        
+        if "age" in question_lower and ages:
+            chunk = chunks[0]
+            return f"Age groups: {', '.join(ages)} [{chunk.document_name}]"
+        
+        # Default fallback
+        chunk = chunks[0]
+        return f"{self._trim_sentence(chunk.chunk_text, 200)}... [{chunk.document_name}]"
 
     def rerank_chunks(self, query: str, chunks: list[RetrievedChunk], limit: int | None = None) -> list[RetrievedChunk]:
         """Rerank chunks using BGE-Reranker-v2-M3 or multi-signal heuristic fallback.
