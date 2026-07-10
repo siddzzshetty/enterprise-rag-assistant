@@ -551,6 +551,9 @@ with chat_tab:
         ask_disabled = not question.strip()
         ask_clicked = st.button("Ask", use_container_width=True, disabled=ask_disabled)
     
+    # Debug mode toggle
+    debug_mode = st.checkbox("Show retrieval debug info", value=False, key="debug_mode")
+    
     if ask_clicked:
         try:
             with st.status("Processing your question...", state="running") as status:
@@ -558,9 +561,9 @@ with chat_tab:
                 response = api_request(
                     "POST",
                     f"/projects/{selected_project['id']}/chat/ask",
-                    json_payload={"question": question},
+                    json_payload={"question": question, "debug": debug_mode},
                 )
-                rewritten = response.get("original_query", response.get("query", ""))
+                rewritten = response.get("original_query") or response.get("query", "")
                 if rewritten and rewritten != question:
                     status.write(f"📝 Rewritten query: '{rewritten}'")
                 status.write("📚 Retrieving and verifying evidence...")
