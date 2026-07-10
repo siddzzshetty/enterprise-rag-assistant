@@ -126,9 +126,6 @@ def create_project() -> None:
     if project_slug:
         payload["slug"] = project_slug
     created_project = api_request("POST", "/projects", json_payload=payload)
-    st.session_state.new_project_name = ""
-    st.session_state.new_project_description = ""
-    st.session_state.new_project_slug = ""
     refresh_workspace()
     st.session_state.selected_project_id = created_project["id"]
     sync_selected_project()
@@ -274,7 +271,7 @@ with st.sidebar:
             st.rerun()
         st.divider()
         st.subheader("Create project")
-        with st.form("create_project_form", clear_on_submit=False):
+        with st.form("create_project_form", clear_on_submit=True):
             st.text_input("Project name", key="new_project_name", placeholder="My Research Project")
             st.text_input("Project slug (optional)", key="new_project_slug", placeholder="my-research-project")
             st.text_area("Description (optional)", key="new_project_description", placeholder="What this project is for")
@@ -312,7 +309,7 @@ with st.sidebar:
             st.caption("No other clients found.")
         st.divider()
         st.subheader("Create new client")
-        with st.form("create_client_form", clear_on_submit=False):
+        with st.form("create_client_form", clear_on_submit=True):
             st.text_input("Client name", key="new_client_name", placeholder="Acme Corp")
             st.text_input("Client slug (optional)", key="new_client_slug", placeholder="acme-corp")
             st.text_input("Admin username (optional)", key="new_client_admin", placeholder="admin", value="admin")
@@ -329,11 +326,6 @@ with st.sidebar:
                     }
                     result = api_request("POST", "/clients", json_payload=payload)
                     st.success(result["message"])
-                    st.session_state.new_client_name = ""
-                    st.session_state.new_client_slug = ""
-                    st.session_state.new_client_admin = "admin"
-                    st.session_state.new_client_password = ""
-                    st.rerun()
             except Exception as exc:
                 st.error(str(exc))
     else:
