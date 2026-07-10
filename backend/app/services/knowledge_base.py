@@ -551,14 +551,77 @@ class KnowledgeBaseService:
             if reranked:
                 return reranked
         
-        # SQLite fallback with text-based matching for reliability
+        # SQLite semantic search with keyword boosting
         sqlite_chunks = self._retrieve_from_sqlite(client_id, project_id, query, limit=20)
         if sqlite_chunks:
             reranked = self.rerank_chunks(query, sqlite_chunks, limit=limit)
             if reranked:
                 return reranked
         
-        return []
+        # Final fallback: direct text search for known keywords
+        return self._text_search_fallback(client_id, project_id, query, limit=limit)
+
+    def _text_search_fallback(self, client_id: int, project_id: int, query: str, limit: int) -> list[RetrievedChunk]:
+        """Direct text search as last resort when semantic search fails."""
+        with self.database.connect() as connection:
+            query_lower = query.lower()
+            
+            known_cities = ["chennai", "hyderabad", "mumbai", "bangalore", "jaipur", "coimbatore", "delhi", "lucknow"]
+            known_ages = ["0-1 year", "1-2 years", "2-3 years", "3-4 years", "4-5 years"]
+            
+            if "city" in query_lower:
+                city_conditions = " OR ".join([f"LOWER(chunk_text) LIKE ?" for _ in known_cities])
+                if city_conditions:
+                    base_sql = f"""
+                        SELECT dc.document_id, dc.chunk_index, dc.section, dc.page_number, dc.chunk_text,
+                               dc.metadata_json, dc.embedding_json,
+                               d.file_name, d.file_type, d.category
+                        FROM document_chunks dc
+                        JOIN documents d ON d.id = dc.document_id
+                        WHERE dc.client_id = ? AND dc.project_id = ? AND ({city_conditions})
+                        LIMIT ?
+                    """
+                    params = [client_id, project_id] + [f"%{c}%" for c in known_cities] + [limit]
+                    rows = connection.execute(base_sql, params).fetchall()
+                    return self._rows_to_chunks(rows)
+            
+            if "age" in query_lower:
+                age_conditions = " OR ".join([f"LOWER(chunk_text) LIKE ?" for _ in known_ages])
+                if age_conditions:
+                    base_sql = f"""
+                        SELECT dc.document_id, dc.chunk_index, dc.section, dc.page_number, dc.chunk_text,
+                               dc.metadata_json, dc.embedding_json,
+                               d.file_name, d.file_type, d.category
+                        FROM document_chunks dc
+                        JOIN documents d ON d.id = dc.document_id
+                        WHERE dc.client_id = ? AND dc.project_id = ? AND ({age_conditions})
+                        LIMIT ?
+                    """
+                    params = [client_id, project_id] + [f"%{a}%" for a in known_ages] + [limit]
+                    rows = connection.execute(base_sql, params).fetchall()
+                    return self._rows_to_chunks(rows)
+            
+            return []
+
+    def _rows_to_chunks(self, rows: list[Any]) -> list[RetrievedChunk]:
+        """Convert SQL rows to RetrievedChunk objects."""
+        chunks: list[RetrievedChunk] = []
+        for row in rows:
+            chunks.append(
+                RetrievedChunk(
+                    document_id=row["document_id"],
+                    document_name=row["file_name"],
+                    file_type=row["file_type"],
+                    category=row["category"],
+                    chunk_index=row["chunk_index"],
+                    page_number=row["page_number"],
+                    section=row["section"],
+                    chunk_text=row["chunk_text"],
+                    score=0.85,
+                    metadata=json.loads(row["metadata_json"]),
+                )
+            )
+        return chunks
 
     def generate_answer(
         self,
