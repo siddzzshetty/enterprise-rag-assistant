@@ -194,8 +194,9 @@ with st.sidebar:
     st.write(BACKEND_URL)
     if st.session_state.auth_token:
         st.success(f"Signed in as {st.session_state.user['full_name']}")
-        if st.session_state.client:
-            st.write(f"Client: {st.session_state.client['name']}")
+    if st.session_state.client:
+        st.write(f"Client: {st.session_state.client['name']}")
+        st.caption(f"Client ID: {st.session_state.client['id']}")
         st.caption(f"Last synced: {st.session_state.last_synced_at or 'never'}")
         refresh_clicked = st.button("Refresh workspace", use_container_width=True)
         if refresh_clicked:
@@ -275,6 +276,32 @@ with st.sidebar:
                     create_project()
                 st.success("Project created successfully.")
                 st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+        st.divider()
+        st.subheader("Create new client")
+        with st.form("create_client_form", clear_on_submit=False):
+            st.text_input("Client name", key="new_client_name", placeholder="Acme Corp")
+            st.text_input("Client slug (optional)", key="new_client_slug", placeholder="acme-corp")
+            st.text_input("Admin username (optional)", key="new_client_admin", placeholder="admin", value="admin")
+            st.text_input("Admin password (optional)", key="new_client_password", placeholder="Password123!", type="password")
+            create_client_clicked = st.form_submit_button("Create client")
+        if create_client_clicked:
+            try:
+                with st.spinner("Creating client..."):
+                    payload = {
+                        "name": st.session_state.get("new_client_name", "").strip(),
+                        "slug": st.session_state.get("new_client_slug", "").strip() or None,
+                        "admin_username": st.session_state.get("new_client_admin", "admin").strip(),
+                        "admin_password": st.session_state.get("new_client_password") or None,
+                    }
+                    result = api_request("POST", "/clients", json_payload=payload)
+                    st.success(result["message"])
+                    st.session_state.new_client_name = ""
+                    st.session_state.new_client_slug = ""
+                    st.session_state.new_client_admin = "admin"
+                    st.session_state.new_client_password = ""
+                    st.rerun()
             except Exception as exc:
                 st.error(str(exc))
     else:

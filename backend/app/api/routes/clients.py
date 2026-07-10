@@ -13,6 +13,24 @@ def list_clients(current_user: dict = Depends(get_current_session)) -> dict:
     return {"items": service.list_clients()}
 
 
+@router.post("")
+def create_client(
+    payload: dict,
+    current_user: dict = Depends(get_current_session),
+) -> dict:
+    """Create a new client organization with an admin user."""
+    name = payload.get("name", "").strip()
+    slug = payload.get("slug")
+    admin_username = payload.get("admin_username", "admin")
+    admin_password = payload.get("admin_password")
+    return service.create_client(
+        name=name,
+        slug=slug,
+        admin_username=admin_username,
+        admin_password=admin_password,
+    )
+
+
 @router.delete("/{client_id}")
 def delete_client(
     client_id: int,

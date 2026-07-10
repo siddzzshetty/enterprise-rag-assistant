@@ -81,6 +81,55 @@ class KnowledgeBaseService:
         self._embedding_model: Any | None = None
         self._chroma_client: Any | None = None
 
+    def create_client(self, name: str, slug: str | None = None, admin_username: str = "admin", admin_password: str | None = None) -> dict[str, Any]:
+        """Create a new client organization with an initial admin user."""
+        client_name = name.strip()
+        client_slug = self._slugify(slug or client_name)
+
+        if not client_name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Client name is required")
+        if not client_slug:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Client slug could not be generated")
+
+        from backend.app.core.security import hash_password
+
+        admin_password = admin_password or "Password123!"
+        admin_hash = hash_password(admin_password)
+        admin_email = f"admin@{client_slug}.local"
+
+        with self.database.connect() as connection:
+            # Check uniqueness
+            existing = connection.execute(
+                "SELECT id FROM clients WHERE slug = ?", (client_slug,)
+            ).fetchone()
+            if existing is not None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Client with slug '{client_slug}' already exists")
+
+            cursor = connection.execute(
+                "INSERT INTO clients (name, slug) VALUES (?, ?)",
+                (client_name, client_slug),
+            )
+            client_id = cursor.lastrowid
+
+            connection.execute(
+                """
+                INSERT INTO users (client_id, email, username, full_name, password_hash, is_active)
+                VALUES (?, ?, ?, ?, ?, 1)
+                """,
+                (client_id, admin_email, admin_username, f"{client_name} Admin", admin_hash),
+            )
+            connection.commit()
+
+        return {
+            "id": client_id,
+            "name": client_name,
+            "slug": client_slug,
+            "admin_username": admin_username,
+            "admin_email": admin_email,
+            "admin_password": admin_password,
+            "message": f"Client '{client_name}' created. Login with username '{admin_username}' and password '{admin_password}'",
+        }
+
     def list_clients(self) -> list[dict[str, Any]]:
         with self.database.connect() as connection:
             rows = connection.execute("SELECT id, name, slug, created_at FROM clients ORDER BY name").fetchall()
