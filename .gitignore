@@ -21,6 +21,8 @@ data/chroma/*
 !data/chroma/.gitkeep
 data/uploads/*
 !data/uploads/.gitkeep
+data/*.db
+data/insighthub.db
 
 # Editor
 .vscode/

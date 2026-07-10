@@ -45,6 +45,17 @@ st.markdown(
         border-radius: 1rem;
         padding: 1rem;
     }
+    .stButton button {
+        transition: all 0.2s ease;
+    }
+    .stButton button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+    .loading-text {
+        color: #4a90d9;
+        font-style: italic;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -526,18 +537,29 @@ with upload_tab:
 
 with chat_tab:
     st.markdown("### Ask the selected project")
-    question = st.text_input("Question", placeholder="What did respondents say about pricing?")
-    if st.button("Ask", use_container_width=True, disabled=not question.strip()):
+    col_question, col_ask = st.columns([4, 1])
+    with col_question:
+        question = st.text_input("Question", placeholder="What did respondents say about pricing?", label_visibility="collapsed")
+    with col_ask:
+        ask_disabled = not question.strip()
+        ask_clicked = st.button("Ask", use_container_width=True, disabled=ask_disabled)
+    
+    if ask_clicked:
         try:
-            with st.spinner("Retrieving and verifying grounded response..."):
+            with st.status("Processing your question...", state="running") as status:
+                status.write("🔍 Rewriting query...")
                 response = api_request(
                     "POST",
                     f"/projects/{selected_project['id']}/chat/ask",
                     json_payload={"question": question},
                 )
+                rewritten = response.get("original_query", response.get("query", ""))
+                if rewritten != question:
+                    status.write(f"📝 Rewritten query: '{rewritten}'")
+                status.write("📚 Retrieving and verifying evidence...")
             st.session_state.chat_history.insert(0, response)
         except Exception as exc:
-            st.error(str(exc))
+            st.error(f"Error: {str(exc)}")
 
     if st.session_state.chat_history:
         for entry in st.session_state.chat_history:
@@ -547,16 +569,21 @@ with chat_tab:
                 st.markdown(entry["answer"])
                 status_label = entry.get("verification_status", "pending")
                 notes = entry.get("verification_notes", "")
-                st.caption(f"Verification: {status_label}" + (f" | {notes}" if notes else ""))
+                if status_label == "accepted":
+                    st.caption(f"✓ Verification: {status_label}" + (f" | {notes}" if notes else ""))
+                elif status_label == "rejected":
+                    st.caption(f"⚠ Verification: {status_label}" + (f" | {notes}" if notes else ""))
+                else:
+                    st.caption(f"ⓘ Verification: {status_label}" + (f" | {notes}" if notes else ""))
                 if entry.get("sources"):
-                    with st.expander("Sources"):
+                    with st.expander("📄 View sources"):
                         for source in entry["sources"]:
-                            st.write(
-                                f"{source['document_name']} | {source['category']} | chunk {source['chunk_index']} | score {source['score']}"
-                            )
-                            st.caption(source.get("snippet", ""))
+                            st.markdown(f"**{source['document_name']}** ({source['category']})")
+                            st.caption(f"Chunk {source['chunk_index']} | Relevance: {source['score']:.2f}")
+                            st.markdown(f"> {source.get('snippet', '')}")
+                            st.divider()
     else:
-        st.info("No chat history yet.")
+        st.info("No chat history yet. Ask a question about your project's documents above.")
 
 with exports_tab:
     st.markdown("### Export project knowledge")
