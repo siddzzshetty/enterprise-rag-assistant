@@ -42,6 +42,11 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     SentenceTransformer = None
 
+try:
+    from sentence_transformers import CrossEncoder
+except ImportError:  # pragma: no cover - optional dependency  
+    CrossEncoder = None
+
 
 RESEARCH_CATEGORIES = [
     "Survey Dataset",
@@ -79,6 +84,7 @@ class KnowledgeBaseService:
         self.settings = get_settings()
         self.database = Database()
         self._embedding_model: Any | None = None
+        self._reranker_model: Any | None = None
         self._chroma_client: Any | None = None
 
     def create_client(self, name: str, slug: str | None = None, admin_username: str = "admin", admin_password: str | None = None) -> dict[str, Any]:
@@ -590,65 +596,53 @@ class KnowledgeBaseService:
         )
 
     def rerank_chunks(self, query: str, chunks: list[RetrievedChunk], limit: int | None = None) -> list[RetrievedChunk]:
-        """Rerank chunks using multiple signals without restricting search space.
+        """Rerank chunks using BGE-Reranker-v2-M3 or multi-signal heuristic fallback.
         
-        Features:
-        - Semantic similarity (from embedding distance)
-        - Term overlap scoring
-        - Structure-aware boosting (methodology, findings, summary sections)
-        - Numerical presence for numerical questions
-        - Document category weighting
-        - All source types remain searchable
+        All source types remain searchable - reranking only improves relevance ordering.
         """
         if not chunks:
             return []
 
+        # Try BGE-Reranker first (cross-encoder approach)
+        reranker_model = self._get_reranker_model()
+        if reranker_model is not None:
+            try:
+                # Create query-chunk pairs for cross-encoder
+                pairs = [(query, chunk.chunk_text) for chunk in chunks]
+                scores = reranker_model.predict(pairs)  # type: ignore
+                
+                for chunk, rerank_score in zip(chunks, scores):
+                    chunk.score = float(rerank_score)
+                
+                chunks.sort(key=lambda c: c.score, reverse=True)
+                return chunks[:limit] if limit is not None else chunks
+            except Exception:
+                pass  # Fall back to heuristic reranking
+
+        # Heuristic reranking fallback (multi-signal)
         query_lower = query.lower()
         query_terms = set(re.findall(r"[A-Za-z0-9]+", query_lower))
-        
-        # Detect if question seeks numerical information
         is_numerical = any(kw in query_lower for kw in ["how many", "how much", "total", "number", "percentage", "ratio", "average", "mean", "n=", "sample size"])
-        
-        # Structure keywords that indicate important sections
         structure_keywords = ["methodology", "findings", "results", "summary", "conclusion", "recommendation", "introduction", "background"]
         
         reranked: list[RetrievedChunk] = []
         for chunk in chunks:
-            scores = []
-            
-            # 1. Semantic similarity score (normalized, higher is better)
-            semantic_score = chunk.score
-            scores.append(("semantic", semantic_score))
-            
-            # 2. Term overlap (TF-style)
+            # Term overlap score
             chunk_terms = set(re.findall(r"[A-Za-z0-9]+", chunk.chunk_text.lower()))
             overlap_score = len(query_terms & chunk_terms) / max(1, len(query_terms))
-            scores.append(("overlap", overlap_score))
             
-            # 3. Structure boosting - chunks mentioning key sections
+            # Structure boosting
             structure_boost = 0.15
-            chunk_section_lower = (chunk.section or "").lower()
             for kw in structure_keywords:
-                if kw in chunk_section_lower or kw in chunk.chunk_text.lower():
+                if kw in (chunk.section or "").lower() or kw in chunk.chunk_text.lower():
                     structure_boost += 0.1
-            scores.append(("structure", structure_boost))
             
-            # 4. Numerical content boost for numerical questions
+            # Numerical boost
             numeric_boost = 0.0
-            if is_numerical:
-                numbers_in_chunk = re.findall(r"\b\d+(?:\.\d+)?\b", chunk.chunk_text)
-                if numbers_in_chunk:
-                    numeric_boost = min(0.25, 0.05 * len(numbers_in_chunk))
-            scores.append(("numeric", numeric_boost))
+            if is_numerical and re.findall(r"\b\d+(?:\.\d+)?\b", chunk.chunk_text):
+                numeric_boost = 0.15
             
-            # Combine scores with weights
-            combined_score = (
-                0.45 * semantic_score +
-                0.25 * overlap_score +
-                0.20 * structure_boost +
-                0.10 * numeric_boost
-            )
-            scores.append(("combined", combined_score))
+            combined_score = 0.5 * chunk.score + 0.3 * overlap_score + 0.15 * structure_boost + 0.05 * numeric_boost
             
             reranked.append(
                 RetrievedChunk(
@@ -1303,6 +1297,18 @@ class KnowledgeBaseService:
         except Exception:
             self._embedding_model = None
         return self._embedding_model
+
+    def _get_reranker_model(self) -> Any | None:
+        """Load BGE-Reranker-v2-M3 for proper cross-encoder reranking."""
+        if self._reranker_model is not None:
+            return self._reranker_model
+        if CrossEncoder is None:
+            return None
+        try:
+            self._reranker_model = CrossEncoder("BAAI/bge-reranker-v2-m3")
+        except Exception:
+            self._reranker_model = None
+        return self._reranker_model
 
     def _heuristic_category(self, file_name: str, text: str, content_type: str | None = None) -> str:
         filename = file_name.lower()
