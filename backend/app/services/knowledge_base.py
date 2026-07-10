@@ -60,7 +60,7 @@ TEXT_EXTENSIONS = {".txt", ".md", ".rtf", ".json"}
 DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".pptx", ".csv", ".xlsx", ".xls"}
 
 
-@dataclass(slots=True)
+@dataclass
 class RetrievedChunk:
     document_id: int
     document_name: str

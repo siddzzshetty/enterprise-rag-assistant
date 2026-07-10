@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any, Callable
 
 try:
@@ -12,7 +12,7 @@ except ImportError:  # pragma: no cover - optional dependency
 from backend.app.services.knowledge_base import KnowledgeBaseService, RetrievedChunk
 
 
-@dataclass(slots=True)
+@dataclass
 class RagState:
     client_id: int
     project_id: int
@@ -31,6 +31,17 @@ class RagState:
     top_chunk_score: float = 0.0
 
 
+def _asdict(state: RagState) -> dict[str, Any]:
+    """Convert RagState to dict, handling non-serializable fields."""
+    result = asdict(state)
+    # Convert RetrievedChunk objects to serializable format
+    if state.candidate_chunks:
+        result["candidate_chunks"] = [asdict(c) if hasattr(c, "__dict__") else c for c in state.candidate_chunks]
+    if state.reranked_chunks:
+        result["reranked_chunks"] = [asdict(c) if hasattr(c, "__dict__") else c for c in state.reranked_chunks]
+    return result
+
+
 class IntelligentRAGWorkflow:
     def __init__(self, service: KnowledgeBaseService) -> None:
         self.service = service
@@ -39,9 +50,13 @@ class IntelligentRAGWorkflow:
     def run(self, client_id: int, project_id: int, user_id: int, question: str) -> dict[str, Any]:
         state = RagState(client_id=client_id, project_id=project_id, user_id=user_id, question=question)
         if self._graph is not None:
-            result = self._graph.invoke(state.__dict__)
+            # Convert to dict for langgraph
+            state_dict = _asdict(state)
+            result = self._graph.invoke(state_dict)
         else:
-            result = self._fallback_run(state.__dict__)
+            # For fallback, use dict directly
+            state_dict = asdict(state) if hasattr(state, "__dict__") else {"client_id": client_id, "project_id": project_id, "user_id": user_id, "question": question}
+            result = self._fallback_run(state_dict)
         return self._finalize(result)
 
     def _build_graph(self):
