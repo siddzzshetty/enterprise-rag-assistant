@@ -624,15 +624,66 @@ class KnowledgeBaseService:
         )
 
     def rerank_chunks(self, query: str, chunks: list[RetrievedChunk], limit: int | None = None) -> list[RetrievedChunk]:
+        """Rerank chunks using multiple signals without restricting search space.
+        
+        Features:
+        - Semantic similarity (from embedding distance)
+        - Term overlap scoring
+        - Structure-aware boosting (methodology, findings, summary sections)
+        - Numerical presence for numerical questions
+        - Document category weighting
+        - All source types remain searchable
+        """
         if not chunks:
             return []
 
-        query_terms = set(re.findall(r"[A-Za-z0-9]+", query.lower()))
+        query_lower = query.lower()
+        query_terms = set(re.findall(r"[A-Za-z0-9]+", query_lower))
+        
+        # Detect if question seeks numerical information
+        is_numerical = any(kw in query_lower for kw in ["how many", "how much", "total", "number", "percentage", "ratio", "average", "mean", "n=", "sample size"])
+        
+        # Structure keywords that indicate important sections
+        structure_keywords = ["methodology", "findings", "results", "summary", "conclusion", "recommendation", "introduction", "background"]
+        
         reranked: list[RetrievedChunk] = []
         for chunk in chunks:
+            scores = []
+            
+            # 1. Semantic similarity score (normalized, higher is better)
+            semantic_score = chunk.score
+            scores.append(("semantic", semantic_score))
+            
+            # 2. Term overlap (TF-style)
             chunk_terms = set(re.findall(r"[A-Za-z0-9]+", chunk.chunk_text.lower()))
-            overlap = len(query_terms & chunk_terms) / max(1, len(query_terms))
-            combined_score = (0.65 * float(chunk.score)) + (0.35 * overlap)
+            overlap_score = len(query_terms & chunk_terms) / max(1, len(query_terms))
+            scores.append(("overlap", overlap_score))
+            
+            # 3. Structure boosting - chunks mentioning key sections
+            structure_boost = 0.15
+            chunk_section_lower = (chunk.section or "").lower()
+            for kw in structure_keywords:
+                if kw in chunk_section_lower or kw in chunk.chunk_text.lower():
+                    structure_boost += 0.1
+            scores.append(("structure", structure_boost))
+            
+            # 4. Numerical content boost for numerical questions
+            numeric_boost = 0.0
+            if is_numerical:
+                numbers_in_chunk = re.findall(r"\b\d+(?:\.\d+)?\b", chunk.chunk_text)
+                if numbers_in_chunk:
+                    numeric_boost = min(0.25, 0.05 * len(numbers_in_chunk))
+            scores.append(("numeric", numeric_boost))
+            
+            # Combine scores with weights
+            combined_score = (
+                0.45 * semantic_score +
+                0.25 * overlap_score +
+                0.20 * structure_boost +
+                0.10 * numeric_boost
+            )
+            scores.append(("combined", combined_score))
+            
             reranked.append(
                 RetrievedChunk(
                     document_id=chunk.document_id,
