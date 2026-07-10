@@ -293,12 +293,21 @@ with st.sidebar:
         if all_clients:
             for c in all_clients:
                 is_current = st.session_state.client and c["id"] == st.session_state.client["id"]
-                prefix = "▶ " if is_current else "  "
-                st.write(f"{prefix}**{c['name']}** (ID: {c['id']})")
-                st.caption(f"Projects: {c['project_count']} | Docs: {c['document_count']} | Slug: {c['slug']}")
-                if not is_current:
-                    login_hint = f"Login: `{c.get('admin_username', 'admin')}` / Password123!"
-                    st.caption(login_hint)
+                if is_current:
+                    st.write(f"▶ **{c['name']}** ← You are here")
+                    st.caption(f"Projects: {c['project_count']} | Docs: {c['document_count']}")
+                else:
+                    col1, col2 = st.columns([3, 1])
+                    col1.write(f"**{c['name']}**")
+                    col1.caption(f"Projects: {c['project_count']} | Docs: {c['document_count']}")
+                    switch_key = f"switch_to_client_{c['id']}"
+                    if col2.button("Switch", key=switch_key, use_container_width=True):
+                        # Auto-fill login form and sign in
+                        st.session_state.switch_client_id = c["id"]
+                        st.session_state.switch_client_name = c["name"]
+                        st.session_state.switch_username = "admin"
+                        st.session_state.switch_password = "Password123!"
+                        st.info(f"Sign out first, then log in as 'admin' / 'Password123!' for client '{c['name']}'")
         else:
             st.caption("No other clients found.")
         st.divider()

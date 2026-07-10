@@ -14,11 +14,7 @@ class SeedData:
         ("Local Research Workspace", "local-research-workspace"),
     ]
 
-    projects = [
-        ("Local Research Workspace", [
-            ("Getting Started Project", "getting-started-project", "Upload your own documents and ask questions against them."),
-        ]),
-    ]
+    projects = []
 
     users = [
         ("Local Research Workspace", "admin@localworkspace.com", "local_admin", "Local Admin", "Password123!"),
