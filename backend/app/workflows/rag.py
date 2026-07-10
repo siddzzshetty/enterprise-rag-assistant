@@ -88,11 +88,12 @@ class IntelligentRAGWorkflow:
         return state
 
     def _retrieve_context(self, state: dict[str, Any]) -> dict[str, Any]:
+        # Fetch more candidates for better recall
         state["candidate_chunks"] = self.service.retrieve_chunks(
             state["client_id"],
             state["project_id"],
             state["rewritten_query"],
-            limit=8,
+            limit=20,  # Get 20 candidates for reranking
         )
         return state
 
