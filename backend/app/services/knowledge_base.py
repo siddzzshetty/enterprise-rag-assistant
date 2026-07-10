@@ -377,45 +377,91 @@ class KnowledgeBaseService:
             "sources": sources,
         }
 
+    def classify_question(self, question: str) -> dict[str, Any]:
+        """Classify question type and extract key search terms for generalized retrieval."""
+        question_lower = question.lower().strip()
+        
+        # Detect question type
+        question_types = {
+            "factual": ["what", "when", "where", "which", "who", "how many", "how much", "how old"],
+            "numerical": ["ratio", "percentage", "average", "mean", "median", "total", "number", "score", "value"],
+            "demographic": ["age", "gender", "male", "female", "income", "education", "occupation", "region"],
+            "comparative": ["compare", "versus", "vs", "difference", "contrast", "better", "worse"],
+            "summarization": ["summarize", "summary", "overview", "main findings", "key insights"],
+            "recommendation": ["recommend", "suggest", "should", "best", "optimal"],
+            "qualitative": ["why", "how", "feel", "think", "opinion", "perspective", "experience"],
+            "evidence": ["support", "evidence", "proof", "cite", "reference", "source"],
+        }
+        
+        detected_types = []
+        for qtype, keywords in question_types.items():
+            if any(kw in question_lower for kw in keywords):
+                detected_types.append(qtype)
+        
+        # Extract key entities/numbers
+        numbers = re.findall(r"\b\d+(?:\.\d+)?\b", question)
+        has_numbers = len(numbers) > 0
+        
+        return {
+            "types": detected_types or ["general"],
+            "has_numbers": has_numbers,
+            "numbers": numbers,
+        }
+    
     def rewrite_query(self, question: str) -> str:
         normalized = re.sub(r"\s+", " ", question).strip()
         if not normalized:
             return normalized
         
-        # Expand research-specific terminology
+        # Get question classification for context-aware expansion
+        classification = self.classify_question(question)
+        
+        # Generalized research terminology expansion based on question type
         query_expansions = {
-            "sample size": "sample size respondents n= methodology survey participants",
-            "age group": "age group children demographics age range",
-            "cities": "cities locations surveyed locations research",
-            "gender ratio": "gender ratio male female respondents demographics",
-            "respondents": "respondents participants n= survey sample",
-            "methodology": "methodology sample size age group cities surveyed",
+            "sample size": ["respondents", "participants", "n=", "methodology", "survey"],
+            "age group": ["demographics", "children", "age range", "age demographic", "kids"], 
+            "cities": ["locations", "surveyed", "region", "geography", "urban", "metros"],
+            "gender ratio": ["male", "female", "respondents", "demographics", "sex", "gender split"],
+            "respondents": ["participants", "survey", "sample", "n=", "respondents"],
+            "methodology": ["method", "approach", "sample size", "survey design", "data collection"],
+            "findings": ["results", "key findings", "insights", "conclusions", "outcomes"],
+            "recommendations": ["suggest", "advise", "proposals", "next steps", "action items"],
         }
         
         query_lower = normalized.lower()
-        for source, target in query_expansions.items():
+        expansions = []
+        for source, terms in query_expansions.items():
             if source in query_lower:
-                normalized += " " + target
+                expansions.extend(terms)
+        
+        # For numerical questions, look for actual numbers and related patterns
+        if "numerical" in classification["types"]:
+            # Add context that helps find numbers
+            if not any(e in query_lower for e in ["percentage", "%", "ratio", "split"]):
+                expansions.append("numbers percentages")
+        
+        if expansions:
+            normalized += " " + " ".join(expansions)
         
         if self.settings.groq_api_key:
             prompt = (
-                "Rewrite the following research query into a clear, concise search request. "
-                "Fix spelling, expand abbreviations, add relevant research terminology, and preserve the original meaning. "
-                "Return only the rewritten query.\n\n"
-                f"Query: {normalized}"
+                "Rewrite the following research query into a clear, searchable question. "
+                "Fix spelling, expand key terms, and add relevant synonyms. "
+                "Keep the original meaning intact. Return only the rewritten query.\n\n"
+                f"Query: {question}"
             )
             response_text = self._groq_chat([
-                {"role": "system", "content": "You rewrite search queries for a market research assistant."},
+                {"role": "system", "content": "You rewrite queries for better document retrieval. Keep it clear and add synonyms."},
                 {"role": "user", "content": prompt},
             ])
             if response_text:
                 return self._strip_wrappers(response_text)
         
-        # Fix common misspellings
+        # Fix common misspellings without losing context
         replacements = {
             "mumbay": "Mumbai",
             "prcing": "pricing",
-            "prcng": "pricing",
+            "prcng": "pricing", 
             "custmr": "customer",
             "respndent": "respondent",
         }
