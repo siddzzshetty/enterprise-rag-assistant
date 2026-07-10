@@ -486,7 +486,12 @@ class KnowledgeBaseService:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
 
-    def chunk_text(self, text: str, chunk_size: int = 180, overlap: int = 30) -> list[dict[str, Any]]:
+    def chunk_text(self, text: str, chunk_size: int = 100, overlap: int = 20) -> list[dict[str, Any]]:
+        """Split text into smaller, more focused chunks for better factual retrieval.
+        
+        Smaller chunks (100 words default) help isolate specific facts and prevent
+        dilution of important keywords across large document sections.
+        """
         words = text.split()
         if not words:
             return []
@@ -546,16 +551,16 @@ class KnowledgeBaseService:
         context_block = self._format_context_block(chunks)
         if self.settings.groq_api_key:
             prompt = (
-                "Answer the user's question using only the provided project context. "
-                "Be concise, factual, and include the source document names inline when relevant. "
-                "If the context is insufficient, say so directly.\n\n"
-                f"Project: {project['name']}\n"
-                f"Original question: {question}\n"
-                f"Rewritten question: {rewritten_query}\n\n"
+                "You are an enterprise research assistant. Answer ONLY using the provided context. "
+                "If the context doesn't contain the answer, respond: 'I could not find this information in the uploaded documents.' "
+                "For numerical facts, quote the exact number or range. "
+                "Include inline citations like [document_name]. "
+                "Be concise - 2-3 sentences maximum.\n\n"
+                f"Question: {question}\n\n"
                 f"Context:\n{context_block}"
             )
             response_text = self._groq_chat([
-                {"role": "system", "content": "You are an enterprise research assistant grounded in project evidence."},
+                {"role": "system", "content": "You answer research questions using only project evidence. No speculation. No hallucination. Cite sources inline."},
                 {"role": "user", "content": prompt},
             ])
             if response_text:
