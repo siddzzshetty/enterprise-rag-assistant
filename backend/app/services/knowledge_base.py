@@ -1294,9 +1294,14 @@ class KnowledgeBaseService:
         return "\n\n".join(blocks)
 
     def _groq_chat(self, messages: list[dict[str, str]]) -> str:
+        """LLM chat method - uses Groq API if key is set, otherwise returns empty for heuristic fallback."""
         if not self.settings.groq_api_key:
             return ""
         try:
+            # Check if GROQ_API_KEY is actually a HuggingFace key
+            if self.settings.groq_api_key.startswith("hf_"):
+                return self._huggingface_chat(messages)
+            # Default to Groq
             response = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={
@@ -1316,6 +1321,47 @@ class KnowledgeBaseService:
             if not choices:
                 return ""
             return choices[0]["message"]["content"].strip()
+        except Exception:
+            return ""
+
+    def _huggingface_chat(self, messages: list[dict[str, str]]) -> str:
+        """Use Hugging Face Inference API for LLM calls."""
+        # Format messages for Llama-3.1-8B-Instruct chat template
+        formatted_prompt = ""
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                formatted_prompt += f"<|system|>\n{content}\n"
+            elif role == "user":
+                formatted_prompt += f"<|user|>\n{content}\n"
+            elif role == "assistant":
+                formatted_prompt += f"<|assistant|>\n{content}\n"
+        formatted_prompt += "<|assistant|>\n"
+        
+        try:
+            response = requests.post(
+                "https://api-inference.huggingface.co/models/meta-llama/Llama-3.1-8B-Instruct",
+                headers={
+                    "Authorization": f"Bearer {self.settings.groq_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "inputs": formatted_prompt,
+                    "parameters": {
+                        "max_new_tokens": 512,
+                        "temperature": 0.1,
+                        "top_p": 0.95,
+                        "do_sample": True,
+                    },
+                },
+                timeout=60,
+            )
+            response.raise_for_status()
+            result = response.json()
+            if isinstance(result, list) and len(result) > 0:
+                return result[0].get("generated_text", "").strip()
+            return result.get("generated_text", "").strip()
         except Exception:
             return ""
 
