@@ -409,55 +409,14 @@ class KnowledgeBaseService:
         }
     
     def rewrite_query(self, question: str) -> str:
+        """Rewrite query for better retrieval while preserving original semantic intent.
+        
+        Key fix: We DON'T add extra terms because they cause semantic drift.
+        We only fix spelling and normalize the query.
+        """
         normalized = re.sub(r"\s+", " ", question).strip()
-        if not normalized:
-            return normalized
         
-        # Get question classification for context-aware expansion
-        classification = self.classify_question(question)
-        
-        # Generalized research terminology expansion based on question type
-        query_expansions = {
-            "sample size": ["respondents", "participants", "n=", "methodology", "survey"],
-            "age group": ["demographics", "children", "age range", "age demographic", "kids"], 
-            "cities": ["locations", "surveyed", "region", "geography", "urban", "metros"],
-            "gender ratio": ["male", "female", "respondents", "demographics", "sex", "gender split"],
-            "respondents": ["participants", "survey", "sample", "n=", "respondents"],
-            "methodology": ["method", "approach", "sample size", "survey design", "data collection"],
-            "findings": ["results", "key findings", "insights", "conclusions", "outcomes"],
-            "recommendations": ["suggest", "advise", "proposals", "next steps", "action items"],
-        }
-        
-        query_lower = normalized.lower()
-        expansions = []
-        for source, terms in query_expansions.items():
-            if source in query_lower:
-                expansions.extend(terms)
-        
-        # For numerical questions, look for actual numbers and related patterns
-        if "numerical" in classification["types"]:
-            # Add context that helps find numbers
-            if not any(e in query_lower for e in ["percentage", "%", "ratio", "split"]):
-                expansions.append("numbers percentages")
-        
-        if expansions:
-            normalized += " " + " ".join(expansions)
-        
-        if self.settings.groq_api_key:
-            prompt = (
-                "Rewrite the following research query into a clear, searchable question. "
-                "Fix spelling, expand key terms, and add relevant synonyms. "
-                "Keep the original meaning intact. Return only the rewritten query.\n\n"
-                f"Query: {question}"
-            )
-            response_text = self._groq_chat([
-                {"role": "system", "content": "You rewrite queries for better document retrieval. Keep it clear and add synonyms."},
-                {"role": "user", "content": prompt},
-            ])
-            if response_text:
-                return self._strip_wrappers(response_text)
-        
-        # Fix common misspellings without losing context
+        # Only fix spelling errors - don't add terms that cause drift
         replacements = {
             "mumbay": "Mumbai",
             "prcing": "pricing",
@@ -467,6 +426,7 @@ class KnowledgeBaseService:
         }
         for source, target in replacements.items():
             normalized = re.sub(source, target, normalized, flags=re.IGNORECASE)
+        
         return normalized[0].upper() + normalized[1:] if normalized else normalized
 
     def classify_document(self, file_name: str, text: str, content_type: str | None = None) -> str:
@@ -575,11 +535,17 @@ class KnowledgeBaseService:
         return [self._hash_embedding(text) for text in text_list]
 
     def retrieve_chunks(self, client_id: int, project_id: int, query: str, limit: int = 5) -> list[RetrievedChunk]:
+        """Retrieve chunks using semantic similarity with increased initial fetch.
+        
+        We fetch more chunks initially (15) and then rerank, to ensure relevant
+        content isn't missed due to the small default limit.
+        """
         project = self.get_project(client_id, project_id)
-        chroma_chunks = self._retrieve_from_chroma(project, query, limit)
-        if chroma_chunks:
-            return chroma_chunks
-        return self._retrieve_from_sqlite(client_id, project_id, query, limit)
+        # Fetch more candidates to give reranking room to work
+        candidate_chunks = self._retrieve_from_chroma(project, query, limit=15)
+        if candidate_chunks:
+            return candidate_chunks[:limit]
+        return self._retrieve_from_sqlite(client_id, project_id, query, limit)[:limit]
 
     def generate_answer(
         self,
