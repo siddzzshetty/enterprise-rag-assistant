@@ -616,24 +616,28 @@ class KnowledgeBaseService:
 
         if self.settings.groq_api_key:
             prompt = (
-                "You are an enterprise research assistant. Answer using ONLY the provided context. "
-                "If the answer is not found, say: 'I could not find this information in the uploaded documents.' "
-                "Extract and return only the specific fact requested. "
-                "For numerical/factual questions, give a direct one-line answer with the number/value. "
-                "For lists, give only the relevant values. "
-                "No explaining or elaborating. "
-                "Cite sources inline like [document_name].\n\n"
+                "Answer the question using ONLY the provided context. "
+                "Give a direct, concise answer - no explanations. "
+                "If you cannot find the answer, say: 'I could not find this information in the uploaded documents.' "
+                "For lists, return only the values separated by commas. "
+                "Cite the source file inline like [document_name].\n\n"
                 f"Question: {question}\n\n"
                 f"Context:\n{context_block}"
             )
             response_text = self._groq_chat([
-                {"role": "system", "content": "You answer research questions using only project evidence. Be extremely concise. One sentence answers for factual questions. No elaboration."},
+                {"role": "system", "content": "Extract facts concisely. No verbose explanations."},
                 {"role": "user", "content": prompt},
             ])
             if response_text and "could not find" not in response_text.lower():
-                return self._strip_wrappers(response_text).strip()
+                answer = self._strip_wrappers(response_text).strip()
+                # Remove any verbose text - keep only the key facts
+                if len(answer) > 300:
+                    # Extract first sentence or list pattern
+                    lines = [l.strip() for l in answer.split('\n') if l.strip()]
+                    answer = lines[0] if lines else answer[:200]
+                return answer
 
-        # Fallback: extract unique values from chunks using simple aggregation
+        # Fallback: extract and concise answer
         return self._aggregate_values_from_chunks(question, chunks)
 
     def _aggregate_values_from_chunks(self, question: str, chunks: list[RetrievedChunk]) -> str:
