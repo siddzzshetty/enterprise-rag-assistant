@@ -616,23 +616,24 @@ class KnowledgeBaseService:
 
         if self.settings.groq_api_key:
             prompt = (
+                "You are an expert research analyst extracting key findings. "
                 "Answer the question using ONLY the provided context. "
-                "Give a direct, concise answer - no explanations. "
-                "If you cannot find the answer, say: 'I could not find this information in the uploaded documents.' "
-                "For lists, return only the values separated by commas. "
+                "Extract and summarize the specific values or information requested. "
+                "Give a direct, concise answer - no explanations or elaboration. "
+                "If you cannot find the specific values, say: 'I could not find this information in the uploaded documents.' "
+                "For multiple values, list them separated by commas. "
                 "Cite the source file inline like [document_name].\n\n"
                 f"Question: {question}\n\n"
                 f"Context:\n{context_block}"
             )
             response_text = self._groq_chat([
-                {"role": "system", "content": "Extract facts concisely. No verbose explanations."},
+                {"role": "system", "content": "Expert research analyst extracting key numeric values and findings from survey data."},
                 {"role": "user", "content": prompt},
             ])
             if response_text and "could not find" not in response_text.lower():
                 answer = self._strip_wrappers(response_text).strip()
                 # Remove any verbose text - keep only the key facts
                 if len(answer) > 300:
-                    # Extract first sentence or list pattern
                     lines = [l.strip() for l in answer.split('\n') if l.strip()]
                     answer = lines[0] if lines else answer[:200]
                 return answer
