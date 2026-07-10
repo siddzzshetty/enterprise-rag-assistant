@@ -387,30 +387,28 @@ class KnowledgeBaseService:
         """Classify question type and extract key search terms for generalized retrieval."""
         question_lower = question.lower().strip()
         
-        # Detect question type
+        # Detect question type using generic patterns
         question_types = {
-            "factual": ["what", "when", "where", "which", "who", "how many", "how much", "how old"],
-            "numerical": ["ratio", "percentage", "average", "mean", "median", "total", "number", "score", "value"],
-            "demographic": ["age", "gender", "male", "female", "income", "education", "occupation", "region"],
-            "comparative": ["compare", "versus", "vs", "difference", "contrast", "better", "worse"],
-            "summarization": ["summarize", "summary", "overview", "main findings", "key insights"],
-            "recommendation": ["recommend", "suggest", "should", "best", "optimal"],
-            "qualitative": ["why", "how", "feel", "think", "opinion", "perspective", "experience"],
-            "evidence": ["support", "evidence", "proof", "cite", "reference", "source"],
+            "factual": r"\b(what|when|where|which|who|how many|how much|how old)\b",
+            "numerical": r"\b(ratio|percentage|average|mean|median|total|number|score|value)\b",
+            "demographic": r"\b(age|gender|male|female|income|education|occupation|region)\b",
+            "comparative": r"\b(compare|versus|vs|difference|contrast)\b",
+            "summarization": r"\b(summarize|summary|overview|main findings|key insights)\b",
+            "recommendation": r"\b(recommend|suggest|should|best|optimal)\b",
+            "qualitative": r"\b(why|how|feel|think|opinion|perspective|experience)\b",
+            "evidence": r"\b(support|evidence|proof|cite|reference|source)\b",
         }
         
         detected_types = []
-        for qtype, keywords in question_types.items():
-            if any(kw in question_lower for kw in keywords):
+        for qtype, pattern in question_types.items():
+            if re.search(pattern, question_lower):
                 detected_types.append(qtype)
         
-        # Extract key entities/numbers
         numbers = re.findall(r"\b\d+(?:\.\d+)?\b", question)
-        has_numbers = len(numbers) > 0
         
         return {
             "types": detected_types or ["general"],
-            "has_numbers": has_numbers,
+            "has_numbers": len(numbers) > 0,
             "numbers": numbers,
         }
     
@@ -562,46 +560,27 @@ class KnowledgeBaseService:
         return self._text_search_fallback(client_id, project_id, query, limit=limit)
 
     def _text_search_fallback(self, client_id: int, project_id: int, query: str, limit: int) -> list[RetrievedChunk]:
-        """Direct text search as last resort when semantic search fails."""
+        """Direct text search using SQL FTS as last resort when semantic search fails."""
         with self.database.connect() as connection:
-            query_lower = query.lower()
+            # Extract key terms from query for SQL search
+            query_terms = re.findall(r"[A-Za-z]+", query.lower())
+            if not query_terms:
+                return []
             
-            known_cities = ["chennai", "hyderabad", "mumbai", "bangalore", "jaipur", "coimbatore", "delhi", "lucknow"]
-            known_ages = ["0-1 year", "1-2 years", "2-3 years", "3-4 years", "4-5 years"]
-            
-            if "city" in query_lower:
-                city_conditions = " OR ".join([f"LOWER(chunk_text) LIKE ?" for _ in known_cities])
-                if city_conditions:
-                    base_sql = f"""
-                        SELECT dc.document_id, dc.chunk_index, dc.section, dc.page_number, dc.chunk_text,
-                               dc.metadata_json, dc.embedding_json,
-                               d.file_name, d.file_type, d.category
-                        FROM document_chunks dc
-                        JOIN documents d ON d.id = dc.document_id
-                        WHERE dc.client_id = ? AND dc.project_id = ? AND ({city_conditions})
-                        LIMIT ?
-                    """
-                    params = [client_id, project_id] + [f"%{c}%" for c in known_cities] + [limit]
-                    rows = connection.execute(base_sql, params).fetchall()
-                    return self._rows_to_chunks(rows)
-            
-            if "age" in query_lower:
-                age_conditions = " OR ".join([f"LOWER(chunk_text) LIKE ?" for _ in known_ages])
-                if age_conditions:
-                    base_sql = f"""
-                        SELECT dc.document_id, dc.chunk_index, dc.section, dc.page_number, dc.chunk_text,
-                               dc.metadata_json, dc.embedding_json,
-                               d.file_name, d.file_type, d.category
-                        FROM document_chunks dc
-                        JOIN documents d ON d.id = dc.document_id
-                        WHERE dc.client_id = ? AND dc.project_id = ? AND ({age_conditions})
-                        LIMIT ?
-                    """
-                    params = [client_id, project_id] + [f"%{a}%" for a in known_ages] + [limit]
-                    rows = connection.execute(base_sql, params).fetchall()
-                    return self._rows_to_chunks(rows)
-            
-            return []
+            # Build dynamic search for all query terms
+            term_conditions = " OR ".join([f"LOWER(chunk_text) LIKE ?" for _ in query_terms])
+            base_sql = f"""
+                SELECT dc.document_id, dc.chunk_index, dc.section, dc.page_number, dc.chunk_text,
+                       dc.metadata_json, dc.embedding_json,
+                       d.file_name, d.file_type, d.category
+                FROM document_chunks dc
+                JOIN documents d ON d.id = dc.document_id
+                WHERE dc.client_id = ? AND dc.project_id = ? AND ({term_conditions})
+                LIMIT ?
+            """
+            params = [client_id, project_id] + [f"%{t}%" for t in query_terms] + [limit]
+            rows = connection.execute(base_sql, params).fetchall()
+            return self._rows_to_chunks(rows)
 
     def _rows_to_chunks(self, rows: list[Any]) -> list[RetrievedChunk]:
         """Convert SQL rows to RetrievedChunk objects."""
@@ -630,12 +609,6 @@ class KnowledgeBaseService:
         project: dict[str, Any],
         chunks: list[RetrievedChunk],
     ) -> str:
-        # Always try heuristic extraction first - it's most reliable for known data formats
-        if chunks:
-            heuristic_answer = self._direct_factual_answer(question, chunks[:3])
-            if "could not find" not in heuristic_answer.lower() and heuristic_answer.strip():
-                return heuristic_answer
-
         if not chunks:
             return "I could not find this information in the uploaded documents."
 
@@ -658,74 +631,10 @@ class KnowledgeBaseService:
                 {"role": "user", "content": prompt},
             ])
             if response_text and "could not find" not in response_text.lower():
-                cleaned = self._strip_wrappers(response_text)
-                if len(cleaned) > 200:
-                    cleaned = self._extract_key_fact(cleaned, question)
-                return cleaned
+                return self._strip_wrappers(response_text).strip()
 
-        # Final fallback
-        return "I could not find this information in the uploaded documents."
-
-    def _extract_key_fact(self, text: str, question: str) -> str:
-        """Extract the most relevant sentence from verbose LLM output."""
-        sentences = re.split(r"[.!?]+", text)
-        # Look for sentences with numbers or specific answers
-        for sent in sentences:
-            if re.search(r"\d|%|₹|male|female|chennai|mumbai|bangalore", sent, re.IGNORECASE):
-                return sent.strip()[:150]
-        # Return first short sentence
-        for sent in sentences:
-            if len(sent.strip()) > 20 and len(sent.strip()) < 150:
-                return sent.strip()
-        return sentences[0].strip()[:150] if sentences else text[:150]
-
-    def _direct_factual_answer(self, question: str, chunks: list[RetrievedChunk]) -> str:
-        """Provide direct factual answers without verbose excerpts."""
-        question_lower = question.lower()
-        
-        # Known city list from the data
-        known_cities = ["Chennai", "Hyderabad", "Mumbai", "Bangalore", "Jaipur", "Coimbatore", "Delhi", "Delhi NCR", "Lucknow"]
-        
-        if "city" in question_lower or "where" in question_lower or "location" in question_lower:
-            cities = set()
-            for chunk in chunks:
-                # Look for known city names in the text
-                for city in known_cities:
-                    if city.lower() in chunk.chunk_text.lower():
-                        cities.add(city)
-            if cities:
-                return f"Cities: {', '.join(sorted(cities))} [Child_Plan_Study_26th May.xlsx]"
-        
-        if "age" in question_lower and ("group" in question_lower or "child" in question_lower):
-            ages = set()
-            for chunk in chunks:
-                found = re.findall(r"(0-1 year|1-2 years|2-3 years|3-4 years|4-5 years)", 
-                                  chunk.chunk_text, re.IGNORECASE)
-                ages.update(found)
-            if ages:
-                return f"Child age groups: {', '.join(sorted(ages))} [Child_Plan_Study_26th May.xlsx]"
-        
-        if "gender" in question_lower or "ratio" in question_lower:
-            return "Gender: Male and Female respondents [Child_Plan_Study_26th May.xlsx]"
-        
-        if "sample size" in question_lower or "n=" in question_lower or "respondent" in question_lower:
-            for chunk in chunks:
-                # Look for "Base (n who saw concept)" pattern with numbers like 235, 238
-                match = re.search(r"Base.*\(?n who saw concept\)?\s+(\d{2,3})", chunk.chunk_text, re.IGNORECASE)
-                if match:
-                    return f"Sample size: {match.group(1)} respondents [Concept_Scorecard sheet]"
-            # Also check for numbers after city/age patterns
-            match = re.search(r"(?:who saw concept|Total)\s*[:\s]\s*(\d{2,3})", ' '.join(c.chunk_text for c in chunks), re.IGNORECASE)
-            if match:
-                return f"Sample size: {match.group(1)} respondents [Child_Plan_Study_26th May.xlsx]"
-            # Look for numbers in raw data rows - typically the 4th column after respondent ID
-            all_text = ' '.join(c.chunk_text for c in chunks)
-            numbers = re.findall(r"(?:[A-Z]{2,}\d+[A-Z]*\s+[A-Z][a-z]+)\s+(\d{2,3})\s+Married", all_text)
-            if numbers:
-                return f"Sample size: ~{numbers[0]} respondents [Raw_Data sheet]"
-        
-        # Default - no verbose excerpts
-        return f"I could not find this information in the uploaded documents."
+        # Fallback: return concise snippet from first chunk
+        return f"{self._trim_sentence(chunks[0].chunk_text, 150)}... [{chunks[0].document_name}]"
 
     def rerank_chunks(self, query: str, chunks: list[RetrievedChunk], limit: int | None = None) -> list[RetrievedChunk]:
         """Rerank chunks using BGE-Reranker-v2-M3 or multi-signal heuristic fallback.
@@ -1371,7 +1280,6 @@ class KnowledgeBaseService:
 
     def _retrieve_from_sqlite(self, client_id: int, project_id: int, query: str, limit: int) -> list[RetrievedChunk]:
         with self.database.connect() as connection:
-            # Get ALL chunks for this project
             rows = connection.execute(
                 """
                 SELECT dc.document_id, dc.chunk_index, dc.section, dc.page_number, dc.chunk_text,
@@ -1387,25 +1295,11 @@ class KnowledgeBaseService:
                 return []
             
             query_embedding = self.embed_texts([query])[0]
-            query_lower = query.lower()
-            
-            # Known cities and age groups in this dataset
-            known_cities = ["chennai", "hyderabad", "mumbai", "bangalore", "jaipur", "coimbatore", "delhi", "lucknow"]
-            known_ages = ["0-1 year", "1-2 years", "2-3 years", "3-4 years", "4-5 years"]
             
             scored: list[RetrievedChunk] = []
             for row in rows:
                 stored_embedding = json.loads(row["embedding_json"])
                 score = self._cosine_similarity(query_embedding, stored_embedding)
-                
-                # Boost score for keyword matches - this is critical for hash embeddings
-                chunk_text_lower = row["chunk_text"].lower()
-                if "city" in query_lower and any(c in chunk_text_lower for c in known_cities):
-                    score = max(score, 0.85)
-                if "age" in query_lower and any(a in chunk_text_lower for a in known_ages):
-                    score = max(score, 0.85)
-                if "gender" in query_lower and ("male" in chunk_text_lower or "female" in chunk_text_lower):
-                    score = max(score, 0.85)
                     
                 scored.append(
                     RetrievedChunk(
@@ -1422,20 +1316,7 @@ class KnowledgeBaseService:
                     )
                 )
             scored.sort(key=lambda item: item.score, reverse=True)
-            
-            # If we have no good matches, return top chunks anyway for heuristic to work
-            result = scored[:limit]
-            if result and result[0].score > 0.1:
-                return result
-            
-            # Fallback: return chunks with keyword matches even if score low
-            keyword_matches = [r for r in scored if r.score > 0.05 or any(c in r.chunk_text.lower() for c in known_cities + known_ages)]
-            if keyword_matches:
-                keyword_matches.sort(key=lambda x: x.score, reverse=True)
-                return keyword_matches[:limit]
-            
-            # Last resort: return top 5 chunks by score
-            return scored[:min(5, len(scored))]
+            return scored[:limit]
 
     def _get_chroma_collection(self, project: dict[str, Any]) -> Any:
         if chromadb is None:
