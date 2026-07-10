@@ -381,10 +381,27 @@ class KnowledgeBaseService:
         normalized = re.sub(r"\s+", " ", question).strip()
         if not normalized:
             return normalized
+        
+        # Expand research-specific terminology
+        query_expansions = {
+            "sample size": "sample size respondents n= methodology survey participants",
+            "age group": "age group children demographics age range",
+            "cities": "cities locations surveyed locations research",
+            "gender ratio": "gender ratio male female respondents demographics",
+            "respondents": "respondents participants n= survey sample",
+            "methodology": "methodology sample size age group cities surveyed",
+        }
+        
+        query_lower = normalized.lower()
+        for source, target in query_expansions.items():
+            if source in query_lower:
+                normalized += " " + target
+        
         if self.settings.groq_api_key:
             prompt = (
                 "Rewrite the following research query into a clear, concise search request. "
-                "Fix spelling, expand abbreviations, and preserve the original meaning. Return only the rewritten query.\n\n"
+                "Fix spelling, expand abbreviations, add relevant research terminology, and preserve the original meaning. "
+                "Return only the rewritten query.\n\n"
                 f"Query: {normalized}"
             )
             response_text = self._groq_chat([
@@ -393,6 +410,8 @@ class KnowledgeBaseService:
             ])
             if response_text:
                 return self._strip_wrappers(response_text)
+        
+        # Fix common misspellings
         replacements = {
             "mumbay": "Mumbai",
             "prcing": "pricing",
@@ -1272,13 +1291,22 @@ class KnowledgeBaseService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="python-pptx is required to read PowerPoint files")
         presentation = Presentation(str(file_path))
         slide_text: list[str] = []
-        for slide in presentation.slides:
+        for slide_num, slide in enumerate(presentation.slides, start=1):
             collected: list[str] = []
+            title_text = ""
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text.strip():
-                    collected.append(shape.text.strip())
+                    text = shape.text.strip()
+                    # Detect slide titles (short, uppercase, or first text on slide)
+                    if len(text) < 100 and (text.isupper() or not title_text):
+                        title_text = text
+                    collected.append(text)
             if collected:
-                slide_text.append("\n".join(collected))
+                slide_header = f"=== SLIDE {slide_num}"
+                if title_text and title_text != collected[0] or len(collected) > 1:
+                    slide_header += f": {title_text}"
+                slide_header += " ==="
+                slide_text.append(slide_header + "\n" + "\n".join(collected))
         return "\n\n".join(slide_text)
 
     def _extract_csv(self, file_path: Path) -> str:
