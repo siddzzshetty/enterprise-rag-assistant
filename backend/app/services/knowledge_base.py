@@ -640,30 +640,25 @@ class KnowledgeBaseService:
         """Extract and aggregate unique values from chunks when LLM is unavailable."""
         question_lower = question.lower()
         all_text = " ".join(c.chunk_text for c in chunks)
-        
-        # Extract unique city names
-        city_pattern = r"\b(Chennai|Hyderabad|Mumbai|Bangalore|Jaipur|Coimbatore|Delhi\s*NCR|Delhi|Lucknow)\b"
-        cities = sorted(set(re.findall(city_pattern, all_text, re.IGNORECASE)))
-        
-        # Extract unique age groups
-        age_pattern = r"(0-1 year|1-2 years|2-3 years|3-4 years|4-5 years)"
-        ages = sorted(set(re.findall(age_pattern, all_text, re.IGNORECASE)))
-        
-        # Extract sample sizes
-        sample_pattern = r"(?:n\s*=\s*|who saw concept|Total)\s*(\d{2,3})"
-        samples = re.findall(sample_pattern, all_text, re.IGNORECASE)
-        
-        # Determine answer based on question type
-        if "city" in question_lower and cities:
-            chunk = chunks[0]
-            return f"Cities: {', '.join(cities)} [{chunk.document_name}]"
-        
-        if "age" in question_lower and ages:
-            chunk = chunks[0]
-            return f"Age groups: {', '.join(ages)} [{chunk.document_name}]"
-        
-        # Default fallback
         chunk = chunks[0]
+        
+        if "city" in question_lower or "location" in question_lower or "where" in question_lower:
+            # Generic: find frequently appearing capitalized words (likely place names)
+            candidates = re.findall(r"\b([A-Z][a-z]+)\b", all_text)
+            freq = Counter(candidates)
+            # Filter out common structural words
+            common = set(w.lower() for w in "the this that these those sheet final base column row data value".split())
+            values = [c for c, n in freq.most_common(15) if n > 1 and c.lower() not in common]
+            if len(values) > 1:  # Likely multiple places
+                return f"Locations: {', '.join(values[:8])} [{chunk.document_name}]"
+        
+        if "age" in question_lower or "year" in question_lower or "month" in question_lower:
+            # Generic: find any age-range patterns
+            ages = set(re.findall(r"(\d+\s*(?:-|to)\s*\d+\s*(?:year|month))", all_text, re.IGNORECASE))
+            if ages:
+                return f"Age groups: {', '.join(sorted(ages)[:6])} [{chunk.document_name}]"
+        
+        # Default: return trimmed text from most relevant chunk
         return f"{self._trim_sentence(chunk.chunk_text, 200)}... [{chunk.document_name}]"
 
     def rerank_chunks(self, query: str, chunks: list[RetrievedChunk], limit: int | None = None) -> list[RetrievedChunk]:
