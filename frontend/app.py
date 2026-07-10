@@ -83,6 +83,13 @@ def init_state() -> None:
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    # Ensure list fields are never None
+    if st.session_state.chat_history is None:
+        st.session_state.chat_history = []
+    if st.session_state.projects is None:
+        st.session_state.projects = []
+    if st.session_state.project_documents is None:
+        st.session_state.project_documents = []
 
 
 init_state()
@@ -554,10 +561,13 @@ with chat_tab:
                     json_payload={"question": question},
                 )
                 rewritten = response.get("original_query", response.get("query", ""))
-                if rewritten != question:
+                if rewritten and rewritten != question:
                     status.write(f"📝 Rewritten query: '{rewritten}'")
                 status.write("📚 Retrieving and verifying evidence...")
-            st.session_state.chat_history.insert(0, response)
+            if response:
+                st.session_state.chat_history.insert(0, response)
+            else:
+                st.error("No response received from the backend")
         except Exception as exc:
             st.error(f"Error: {str(exc)}")
 
