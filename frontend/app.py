@@ -118,13 +118,22 @@ def refresh_workspace() -> None:
     st.session_state.last_synced_at = datetime.utcnow().isoformat(timespec="seconds")
 
 
-def create_project() -> None:
+def _build_create_project_payload() -> dict[str, Any] | None:
     project_name = st.session_state.get("new_project_name", "").strip()
     project_description = st.session_state.get("new_project_description", "").strip()
     project_slug = st.session_state.get("new_project_slug", "").strip()
+    if not project_name:
+        return None
     payload: dict[str, Any] = {"name": project_name, "description": project_description}
     if project_slug:
         payload["slug"] = project_slug
+    return payload
+
+
+def create_project() -> None:
+    payload = _build_create_project_payload()
+    if payload is None:
+        return
     created_project = api_request("POST", "/projects", json_payload=payload)
     refresh_workspace()
     st.session_state.selected_project_id = created_project["id"]
@@ -271,7 +280,7 @@ with st.sidebar:
             st.rerun()
         st.divider()
         st.subheader("Create project")
-        with st.form("create_project_form", clear_on_submit=True):
+        with st.form("create_project_form", clear_on_submit=False):
             st.text_input("Project name", key="new_project_name", placeholder="My Research Project")
             st.text_input("Project slug (optional)", key="new_project_slug", placeholder="my-research-project")
             st.text_area("Description (optional)", key="new_project_description", placeholder="What this project is for")
@@ -281,6 +290,10 @@ with st.sidebar:
                 with st.spinner("Creating project..."):
                     create_project()
                 st.success("Project created successfully.")
+                # Clear form fields manually after successful creation
+                st.session_state.new_project_name = ""
+                st.session_state.new_project_slug = ""
+                st.session_state.new_project_description = ""
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
@@ -291,25 +304,40 @@ with st.sidebar:
             for c in all_clients:
                 is_current = st.session_state.client and c["id"] == st.session_state.client["id"]
                 if is_current:
-                    st.write(f"▶ **{c['name']}** ← You are here")
+                    st.write(f"▶ **{c['name']}** ← Current")
                     st.caption(f"Projects: {c['project_count']} | Docs: {c['document_count']}")
                 else:
-                    col1, col2 = st.columns([3, 1])
-                    col1.write(f"**{c['name']}**")
-                    col1.caption(f"Projects: {c['project_count']} | Docs: {c['document_count']}")
-                    switch_key = f"switch_to_client_{c['id']}"
-                    if col2.button("Switch", key=switch_key, use_container_width=True):
-                        # Auto-fill login form and sign in
-                        st.session_state.switch_client_id = c["id"]
-                        st.session_state.switch_client_name = c["name"]
-                        st.session_state.switch_username = "admin"
-                        st.session_state.switch_password = "Password123!"
-                        st.info(f"Sign out first, then log in as 'admin' / 'Password123!' for client '{c['name']}'")
+                    col_name, col_switch = st.columns([3, 1])
+                    col_name.write(f"**{c['name']}**")
+                    col_name.caption(f"Projects: {c['project_count']} | Docs: {c['document_count']}")
+                    if col_switch.button("Switch", key=f"switch_{c['id']}", use_container_width=True):
+                        # Store credentials for auto-login
+                        st.session_state.prefill_login = c.get("admin_username", "admin")
+                        st.session_state.prefill_password = "Password123!"
+                        st.session_state.auto_login_client_id = c["id"]
+                        # Sign out then the login form will show at top
+                        for key in [
+                            "auth_token",
+                            "user",
+                            "client",
+                            "projects",
+                            "selected_project_id",
+                            "selected_project",
+                            "project_stats",
+                            "dashboard_summary",
+                            "project_documents",
+                            "chat_history",
+                            "export_files",
+                            "workspace_error",
+                            "last_synced_at",
+                        ]:
+                            st.session_state[key] = [] if key == "projects" else ({} if key == "export_files" else None)
+                        st.rerun()
         else:
-            st.caption("No other clients found.")
+            st.caption("No clients yet.")
         st.divider()
         st.subheader("Create new client")
-        with st.form("create_client_form", clear_on_submit=True):
+        with st.form("create_client_form", clear_on_submit=False):
             st.text_input("Client name", key="new_client_name", placeholder="Acme Corp")
             st.text_input("Client slug (optional)", key="new_client_slug", placeholder="acme-corp")
             st.text_input("Admin username (optional)", key="new_client_admin", placeholder="admin", value="admin")
@@ -319,13 +347,22 @@ with st.sidebar:
             try:
                 with st.spinner("Creating client..."):
                     payload = {
-                        "name": st.session_state.get("new_client_name", "").strip(),
-                        "slug": st.session_state.get("new_client_slug", "").strip() or None,
-                        "admin_username": st.session_state.get("new_client_admin", "admin").strip(),
-                        "admin_password": st.session_state.get("new_client_password") or None,
+                        "name": st.session_state.new_client_name.strip(),
+                        "slug": st.session_state.new_client_slug.strip() or None,
+                        "admin_username": st.session_state.new_client_admin.strip() or "admin",
+                        "admin_password": st.session_state.new_client_password or None,
                     }
-                    result = api_request("POST", "/clients", json_payload=payload)
-                    st.success(result["message"])
+                    if not payload["name"]:
+                        st.error("Client name is required")
+                    else:
+                        result = api_request("POST", "/clients", json_payload=payload)
+                        st.success(result["message"])
+                        # Clear form fields
+                        st.session_state.new_client_name = ""
+                        st.session_state.new_client_slug = ""
+                        st.session_state.new_client_admin = "admin"
+                        st.session_state.new_client_password = ""
+                        st.rerun()
             except Exception as exc:
                 st.error(str(exc))
     else:
@@ -334,9 +371,13 @@ with st.sidebar:
 if not st.session_state.auth_token:
     st.subheader("Login")
     st.caption("Use the local admin account created during database initialization.")
+    prefill_login = st.session_state.get("prefill_login", DEFAULT_DEMO_LOGIN)
+    prefill_password = st.session_state.get("prefill_password", DEFAULT_DEMO_PASSWORD)
+    if st.session_state.get("auto_login_client_id"):
+        st.info(f"Ready to switch to client ID {st.session_state['auto_login_client_id']}. Sign in to continue.")
     with st.form("login_form"):
-        login = st.text_input("Username or email", value=DEFAULT_DEMO_LOGIN)
-        password = st.text_input("Password", type="password", value=DEFAULT_DEMO_PASSWORD)
+        login = st.text_input("Username or email", value=prefill_login)
+        password = st.text_input("Password", type="password", value=prefill_password)
         submitted = st.form_submit_button("Sign in")
 
     if submitted:
@@ -360,7 +401,15 @@ if not st.session_state.auth_token:
                 st.session_state.selected_project = None
                 st.session_state.project_stats = None
                 st.session_state.project_documents = []
+                # If this was a switch operation, enforce the intended client
+                intended_client_id = st.session_state.get("auto_login_client_id")
                 refresh_workspace()
+                if intended_client_id and st.session_state.client and st.session_state.client.get("id") != intended_client_id:
+                    st.warning("You are logged into a different client than the one you selected. Please sign out and use the correct credentials.")
+                # Clear prefill state after successful login
+                for key in ["prefill_login", "prefill_password", "auto_login_client_id"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
                 st.rerun()
         except Exception as exc:
             st.error(str(exc))

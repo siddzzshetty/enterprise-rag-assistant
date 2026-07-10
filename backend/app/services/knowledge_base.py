@@ -141,6 +141,10 @@ class KnowledgeBaseService:
                 document_count = connection.execute(
                     "SELECT COUNT(*) FROM documents WHERE client_id = ?", (row["id"],)
                 ).fetchone()[0]
+                admin_user = connection.execute(
+                    "SELECT username FROM users WHERE client_id = ? LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
                 result.append({
                     "id": row["id"],
                     "name": row["name"],
@@ -148,6 +152,7 @@ class KnowledgeBaseService:
                     "created_at": row["created_at"],
                     "project_count": project_count,
                     "document_count": document_count,
+                    "admin_username": admin_user["username"] if admin_user else "admin",
                 })
             return result
 
