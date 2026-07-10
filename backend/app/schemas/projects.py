@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class ChatQuestionRequest(BaseModel):
     question: str = Field(..., min_length=2)
+    debug: bool = Field(default=False)
 
 
 class ProjectCreateRequest(BaseModel):
