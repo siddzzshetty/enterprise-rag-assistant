@@ -662,14 +662,14 @@ class KnowledgeBaseService:
                 return f"Age groups: {', '.join(sorted(ages)[:6])}"
         
         if "income" in question_lower or "salary" in question_lower or "earn" in question_lower:
-            # Look for income patterns like "₹X" or "Rs X" or currency amounts
-            income_patterns = re.findall(r"(?:₹|Rs\.?\s*|INR\s*)(?:₹|Rs\.?\s*|INR\s*)?\d+(?:,\d+)?", all_text, re.IGNORECASE)
-            amounts = set(re.findall(r"\d+(?:,\d+)?", all_text) if income_patterns else [])
-            # Also look for income ranges
-            income_ranges = set(re.findall(r"\d+\s*(?:-|to)\s*\d+\s*(?:lakh|thousand|rs|₹)", all_text, re.IGNORECASE))
-            if income_ranges or amounts:
-                values = sorted(set(income_ranges) | set(amounts))[:5]
-                return f"Income values: {', '.join(values)}"
+            # Look for income patterns like "₹X Lakhs" or "₹X–Y Lakhs"
+            income_patterns = set(re.findall(r"(₹\d+(?:-|to)\d+)\s*Lakhs?|₹\d+\s*Lakhs?", all_text, re.IGNORECASE))
+            # Also look for "Annual Household Income" column values
+            income_values = set(re.findall(r"(₹\d+(?:-|to)\d+)\s*Lakhs?", all_text, re.IGNORECASE))
+            if income_patterns or income_values:
+                values = sorted(set(income_patterns) | set(income_values))[:6]
+                if values:
+                    return f"Income ranges: {', '.join(values)}"
         
         # For any other question type, do NOT return random text
         return "I could not find this information in the uploaded documents."
