@@ -19,7 +19,8 @@ class Settings(BaseModel):
     sqlite_path: Path = Path(os.getenv("SQLITE_PATH", BASE_DIR / "data" / "insighthub.db"))
     chroma_path: Path = Path(os.getenv("CHROMA_PATH", BASE_DIR / "data" / "chroma"))
     upload_path: Path = Path(os.getenv("UPLOAD_PATH", BASE_DIR / "data" / "uploads"))
-    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    hf_api_key: str = os.getenv("HF_API_KEY", "")
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "") or os.getenv("HF_API_KEY", "")
     groq_model: str = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
